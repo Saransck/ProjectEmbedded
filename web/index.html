@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kids Guardian Watch - M5StickC BLE Companion</title>
+    <!-- Modern Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- QR Code Generator Library -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Background Animated Glow Orbs -->
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+    <div class="glow-orb orb-3"></div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-group">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        <circle cx="12" cy="11" r="3"/>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <h1>Kids Guardian</h1>
+                    <span class="sub">M5StickC PLUS Companion</span>
+                </div>
+            </div>
+
+            <div class="connection-status-pill" id="connPill">
+                <span class="status-dot" id="connDot"></span>
+                <span class="status-label" id="connText">Disconnected</span>
+            </div>
+        </header>
+
+        <!-- Emergency / SOS Alert Banner (Visible when Disconnected or SOS) -->
+        <section class="alert-banner" id="alertBanner" style="display: none;">
+            <div class="alert-content">
+                <div class="alert-icon-pulse">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/>
+                    </svg>
+                </div>
+                <div class="alert-info">
+                    <h3 id="alertTitle">⚠️ ออกนอกระยะเชื่อมต่อ! (Out of Range)</h3>
+                    <p id="alertDesc">นาฬิกาเด็กส่งเสียงร้องเตือน และแสดงข้อมูลผู้ปกครองแล้ว</p>
+                </div>
+                <div class="alert-actions">
+                    <button class="btn btn-danger-action" id="btnSilenceWebSiren">
+                        <span>ปิดเสียงไซเรนมือถือ</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Dashboard Grid -->
+        <main class="dashboard-grid">
+            <!-- Left Column: Status & Controls -->
+            <div class="grid-col col-left">
+                <!-- Device Status Card -->
+                <div class="glass-card status-card">
+                    <div class="card-header">
+                        <h2>สถานะนาฬิกา (Watch Status)</h2>
+                        <span class="badge" id="watchNameBadge">KidsWatch-Kiddo</span>
+                    </div>
+
+                    <div class="radar-visual-container">
+                        <div class="radar-circle" id="radarAnim">
+                            <div class="radar-sweep"></div>
+                            <div class="device-core" id="deviceCore">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="6" y="4" width="12" height="16" rx="3"/>
+                                    <path d="M9 1h6M9 23h6"/>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-row">
+                        <div class="stat-item">
+                            <span class="stat-label">แบตเตอรี่</span>
+                            <div class="stat-value-group">
+                                <span class="stat-value" id="batText">--%</span>
+                                <div class="bat-bar-wrap">
+                                    <div class="bat-bar-fill" id="batBar" style="width: 0%;"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">เวลาบนนาฬิกา</span>
+                            <span class="stat-value" id="watchTimeText">ยังไม่ซิงค์</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">ระยะความปลอดภัย</span>
+                            <span class="stat-value safe-tag" id="rangeStatusText">รอเชื่อมต่อ</span>
+                        </div>
+                    </div>
+
+                    <div class="card-footer-actions">
+                        <button class="btn btn-primary" id="btnConnect">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
+                            </svg>
+                            <span>เชื่อมต่อ BLE กับนาฬิกา</span>
+                        </button>
+                        <button class="btn btn-outline" id="btnSyncTime" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <path d="M12 6v6l4 2"/>
+                            </svg>
+                            <span>ซิงค์เวลาปัจจุบัน</span>
+                        </button>
+                    </div>
+
+                    <div class="scan-options-row">
+                        <label class="scan-toggle-label">
+                            <input type="checkbox" id="chkAllDevices">
+                            <span>🔍 ค้นหาอุปกรณ์ทั้งหมดรอบตัว (Show All Devices)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Remote Watch Actions Card -->
+                <div class="glass-card actions-card">
+                    <div class="card-header">
+                        <h2>คำสั่งควบคุมระยะไกล</h2>
+                    </div>
+                    <div class="quick-action-grid">
+                        <button class="action-btn ring-btn" id="btnRingWatch" disabled>
+                            <div class="action-icon">🔔</div>
+                            <div class="action-label">
+                                <strong>Find Watch (สั่น/ส่งเสียง)</strong>
+                                <span>สั่งให้นาฬิกาส่งเสียงค้นหา</span>
+                            </div>
+                        </button>
+                        <button class="action-btn test-btn" id="btnSimulateLost">
+                            <div class="action-icon">🚨</div>
+                            <div class="action-label">
+                                <strong>ทดสอบเสียงไซเรนมือถือ</strong>
+                                <span>ทดสอบการแจ้งเตือนเสียงไซเรน</span>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Registration & Preview -->
+            <div class="grid-col col-right">
+                <!-- Registration Settings Form -->
+                <div class="glass-card form-card">
+                    <div class="card-header">
+                        <h2>ข้อมูลฉุกเฉิน (Emergency Info)</h2>
+                        <span class="badge badge-accent">บันทึกลง Flash นาฬิกา</span>
+                    </div>
+                    <p class="section-desc">ข้อมูลนี้จะถูกส่งไปเก็บในหน่วยความจำของ M5StickC PLUS เพื่อแสดงผลเมื่อออกนอกระยะ</p>
+
+                    <form id="guardianForm" onsubmit="return false;">
+                        <div class="form-group">
+                            <label for="inputChildName">ชื่อเด็ก / ID น้อง</label>
+                            <div class="input-wrap">
+                                <input type="text" id="inputChildName" placeholder="เช่น น้องภูมิ (Leo)" value="น้องภูมิ">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="inputParentName">ชื่อผู้ปกครอง</label>
+                            <div class="input-wrap">
+                                <input type="text" id="inputParentName" placeholder="เช่น คุณแม่นก" value="คุณแม่นก">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="inputParentPhone">เบอร์โทรศัพท์ติดต่อฉุกเฉิน</label>
+                            <div class="input-wrap">
+                                <input type="tel" id="inputParentPhone" placeholder="เช่น 0812345678" value="0812345678">
+                            </div>
+                        </div>
+
+                        <button class="btn btn-accent full-width" id="btnSaveInfo">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                <polyline points="17 21 17 13 7 13 7 21"/>
+                                <polyline points="7 3 7 8 15 8"/>
+                            </svg>
+                            <span>บันทึกและส่งเข้าสู่นาฬิกา</span>
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Live M5StickC Screen Mockup Preview -->
+                <div class="glass-card preview-card">
+                    <div class="card-header">
+                        <h2>จำลองหน้าจอนาฬิกาเมื่อเกิดเหตุ</h2>
+                        <span class="badge badge-danger">Preview Alarm</span>
+                    </div>
+
+                    <div class="m5-mockup-wrap">
+                        <div class="m5-case">
+                            <div class="m5-brand">M5STICKC PLUS</div>
+                            <div class="m5-screen">
+                                <div class="m5-alarm-header">! LOST CHILD !</div>
+                                <div class="m5-info-box">
+                                    <div class="m5-child">เด็ก: <span id="prevChild">น้องภูมิ</span></div>
+                                    <div class="m5-parent">ผู้ปกครอง: <span id="prevParent">คุณแม่นก</span></div>
+                                    <div class="m5-phone">TEL: <span id="prevPhone">081-234-5678</span></div>
+                                    <div class="m5-hint">โปรดติดต่อผู้ปกครองทันที</div>
+                                </div>
+                            </div>
+                            <div class="m5-btn-m5">M5</div>
+                        </div>
+
+                        <div class="qr-preview-box">
+                            <div class="qr-title">QR Code โทรด่วน:</div>
+                            <div id="qrcode"></div>
+                            <div class="qr-subtitle">สแกนแล้วโทรออกหาผู้ปกครองได้ทันที</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Live Activity Logs -->
+        <section class="glass-card log-card">
+            <div class="card-header">
+                <h3>บันทึกเหตุการณ์ (Activity Logs)</h3>
+                <button class="btn-text" id="btnClearLog">ล้างบันทึก</button>
+            </div>
+            <div class="log-stream" id="logContainer">
+                <div class="log-entry system">
+                    <span class="log-time">00:00:00</span>
+                    <span class="log-msg">พร้อมทำงาน... กรุณากด "เชื่อมต่อ BLE" เพื่อจับคู่กับ M5StickC PLUS</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>Kids Guardian Project for M5StickC PLUS 1.1 • Web Bluetooth API</p>
+        </footer>
+    </div>
+
+    <!-- Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>

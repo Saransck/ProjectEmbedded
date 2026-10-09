@@ -1,18 +1,556 @@
-#include <Arduino.h>
+#include <M5StickCPlus.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <Preferences.h>
 
-// put function declarations here:
-int myFunction(int, int);
+// ========================================================
+// 🛡️ Kids Guardian Smartwatch - M5StickC PLUS 1.1
+// ========================================================
 
+// BLE UUID Definitions (Standard 128-bit UUIDs)
+#define SERVICE_UUID        "19b10000-e8f2-537e-4f6c-d104768a1214"
+#define CHAR_INFO_UUID      "19b10001-e8f2-537e-4f6c-d104768a1214" // Parent Info (Read/Write)
+#define CHAR_TIME_UUID      "19b10002-e8f2-537e-4f6c-d104768a1214" // Time Sync (Write)
+#define CHAR_COMMAND_UUID   "19b10003-e8f2-537e-4f6c-d104768a1214" // Command & SOS (Read/Write/Notify)
+#define CHAR_BATTERY_UUID   "19b10004-e8f2-537e-4f6c-d104768a1214" // Battery % (Read/Notify)
+
+// Operating States
+enum WatchState {
+    STATE_NORMAL,
+    STATE_ALARM_OUT_OF_RANGE,
+    STATE_SOS
+};
+
+WatchState currentState = STATE_NORMAL;
+
+// Preferences (Non-Volatile Storage in ESP32 Flash)
+Preferences prefs;
+String parentName = "Mom/Dad";
+String parentPhone = "0812345678";
+String childName = "Kiddo";
+bool alarmArmEnabled = true;
+
+// BLE Objects
+BLEServer* pServer = nullptr;
+BLECharacteristic* pInfoChar = nullptr;
+BLECharacteristic* pTimeChar = nullptr;
+BLECharacteristic* pCommandChar = nullptr;
+BLECharacteristic* pBatteryChar = nullptr;
+
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+bool hasBeenConnectedEver = false;
+
+// Timers & Control Variables
+unsigned long lastDisplayUpdate = 0;
+unsigned long lastBatteryUpdate = 0;
+unsigned long lastBeepToggle = 0;
+unsigned long alarmTriggerTime = 0;
+unsigned long snoozeUntil = 0;
+unsigned long sosDisplayUntil = 0;
+unsigned long buttonAPressedTime = 0;
+bool isButtonAPressed = false;
+bool buzzerActive = false;
+bool buzzerHighTone = false;
+
+// Brightness control (7-12)
+uint8_t brightnessLevel = 11;
+
+// Forward Declarations
+void updateDisplay();
+void drawNormalWatchFace();
+void drawEmergencyScreen();
+void drawSOSScreen();
+void startBuzzerAlarm();
+void stopBuzzer();
+void playChime();
+void loadSettings();
+void saveSettings();
+int getBatteryPercentage();
+
+// ==========================================
+// 📡 BLE Server Callbacks
+// ==========================================
+class ServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+        deviceConnected = true;
+        hasBeenConnectedEver = true;
+
+        // Auto-recover from alarm when reconnected
+        if (currentState == STATE_ALARM_OUT_OF_RANGE) {
+            currentState = STATE_NORMAL;
+            stopBuzzer();
+            M5.Lcd.fillScreen(BLACK);
+        }
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+        deviceConnected = false;
+
+        // If previously connected and armed, trigger Out-of-Range Alarm
+        if (alarmArmEnabled && hasBeenConnectedEver) {
+            currentState = STATE_ALARM_OUT_OF_RANGE;
+            alarmTriggerTime = millis();
+            M5.Lcd.fillScreen(RED);
+        }
+
+        // Restart Advertising so phone can reconnect
+        BLEDevice::startAdvertising();
+    }
+};
+
+// ==========================================
+// 📩 BLE Characteristic Callbacks
+// ==========================================
+class InfoCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            String payload = String(value.c_str());
+            // Payload format: "ParentName|ParentPhone|ChildName"
+            int firstSep = payload.indexOf('|');
+            int secondSep = payload.indexOf('|', firstSep + 1);
+
+            if (firstSep > 0) {
+                parentName = payload.substring(0, firstSep);
+                if (secondSep > firstSep) {
+                    parentPhone = payload.substring(firstSep + 1, secondSep);
+                    childName = payload.substring(secondSep + 1);
+                } else {
+                    parentPhone = payload.substring(firstSep + 1);
+                }
+                saveSettings();
+                M5.Lcd.fillScreen(BLACK);
+                drawNormalWatchFace();
+            }
+        }
+    }
+};
+
+class TimeCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            // Format: "YYYY,MM,DD,hh,mm,ss"
+            int year, month, day, hour, minute, second;
+            if (sscanf(value.c_str(), "%d,%d,%d,%d,%d,%d", &year, &month, &day, &hour, &minute, &second) == 6) {
+                RTC_TimeTypeDef TimeStruct;
+                TimeStruct.Hours   = hour;
+                TimeStruct.Minutes = minute;
+                TimeStruct.Seconds = second;
+                M5.Rtc.SetTime(&TimeStruct);
+
+                RTC_DateTypeDef DateStruct;
+                DateStruct.Year    = year;
+                DateStruct.Month   = month;
+                DateStruct.Date    = day;
+                DateStruct.WeekDay = 1;
+                M5.Rtc.SetDate(&DateStruct);
+
+                playChime();
+                M5.Lcd.fillScreen(BLACK);
+                drawNormalWatchFace();
+            }
+        }
+    }
+};
+
+class CommandCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            uint8_t cmd = (uint8_t)value[0];
+            if (cmd == 0x01) {
+                // Find My Watch command -> Sound Buzzer
+                for (int i = 0; i < 3; i++) {
+                    M5.Beep.tone(3500);
+                    delay(150);
+                    M5.Beep.mute();
+                    delay(100);
+                }
+            } else if (cmd == 0x02) {
+                // Stop buzzer
+                stopBuzzer();
+            } else if (cmd == 0x03) {
+                // Simulate lost mode
+                currentState = STATE_ALARM_OUT_OF_RANGE;
+                alarmTriggerTime = millis();
+                M5.Lcd.fillScreen(RED);
+            }
+        }
+    }
+};
+
+// ==========================================
+// ⚙️ Persistent Storage (NVS)
+// ==========================================
+void loadSettings() {
+    prefs.begin("kidswatch", true);
+    parentName  = prefs.getString("p_name", "Mom/Dad");
+    parentPhone = prefs.getString("p_phone", "0812345678");
+    childName   = prefs.getString("c_name", "Kiddo");
+    prefs.end();
+}
+
+void saveSettings() {
+    prefs.begin("kidswatch", false);
+    prefs.putString("p_name", parentName);
+    prefs.putString("p_phone", parentPhone);
+    prefs.putString("c_name", childName);
+    prefs.end();
+}
+
+int getBatteryPercentage() {
+    float vbat = M5.Axp.GetBatVoltage();
+    int pct = (int)((vbat - 3.2f) / (4.15f - 3.2f) * 100.0f);
+    if (pct > 100) pct = 100;
+    if (pct < 0) pct = 0;
+    return pct;
+}
+
+void playChime() {
+    M5.Beep.tone(3000);
+    delay(80);
+    M5.Beep.tone(4000);
+    delay(120);
+    M5.Beep.mute();
+}
+
+// ==========================================
+// 🚀 Setup
+// ==========================================
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+    M5.begin();
+    M5.Axp.ScreenBreath(brightnessLevel);
+    M5.Lcd.setRotation(1); // Landscape mode (240x135)
+    M5.Lcd.fillScreen(BLACK);
+
+    loadSettings();
+
+    // Splash screen
+    M5.Lcd.setTextColor(CYAN, BLACK);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.drawString("KIDS GUARDIAN", 35, 30);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.drawString("Smart BLE Anti-Lost Watch", 45, 60);
+    M5.Lcd.setTextColor(YELLOW, BLACK);
+    M5.Lcd.drawString("Starting BLE...", 80, 85);
+    delay(1000);
+
+    // Initialize BLE
+    String devName = "KidsWatch-" + childName;
+    if (devName.length() > 20) {
+        devName = devName.substring(0, 20);
+    }
+    BLEDevice::init(devName.c_str());
+
+    pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new ServerCallbacks());
+
+    BLEService* pService = pServer->createService(SERVICE_UUID);
+
+    // 1. Info Characteristic
+    pInfoChar = pService->createCharacteristic(
+        CHAR_INFO_UUID,
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_WRITE |
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pInfoChar->setCallbacks(new InfoCallbacks());
+    pInfoChar->addDescriptor(new BLE2902());
+    String initialPayload = parentName + "|" + parentPhone + "|" + childName;
+    pInfoChar->setValue(initialPayload.c_str());
+
+    // 2. Time Sync Characteristic
+    pTimeChar = pService->createCharacteristic(
+        CHAR_TIME_UUID,
+        BLECharacteristic::PROPERTY_WRITE
+    );
+    pTimeChar->setCallbacks(new TimeCallbacks());
+
+    // 3. Command & SOS Characteristic
+    pCommandChar = pService->createCharacteristic(
+        CHAR_COMMAND_UUID,
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_WRITE |
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pCommandChar->setCallbacks(new CommandCallbacks());
+    pCommandChar->addDescriptor(new BLE2902());
+
+    // 4. Battery Characteristic
+    pBatteryChar = pService->createCharacteristic(
+        CHAR_BATTERY_UUID,
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pBatteryChar->addDescriptor(new BLE2902());
+
+    pService->start();
+
+    // Start Advertising
+    BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06); // iOS optimization
+    pAdvertising->setMinPreferred(0x12);
+
+    BLEAdvertisementData advData;
+    advData.setFlags(0x06);
+    advData.setCompleteServices(BLEUUID(SERVICE_UUID));
+    pAdvertising->setAdvertisementData(advData);
+
+    BLEAdvertisementData scanData;
+    scanData.setName(devName.c_str());
+    pAdvertising->setScanResponseData(scanData);
+
+    BLEDevice::startAdvertising();
+
+    M5.Lcd.fillScreen(BLACK);
+    drawNormalWatchFace();
 }
 
+// ==========================================
+// 🔄 Main Loop
+// ==========================================
 void loop() {
-  // put your main code here, to run repeatedly:
+    M5.update();
+    unsigned long currentMillis = millis();
+
+    // ----------------------------------------------------
+    // 1. Button Inputs
+    // ----------------------------------------------------
+    // Button A (Front M5): Long press (2 sec) -> Send SOS
+    if (M5.BtnA.isPressed()) {
+        if (!isButtonAPressed) {
+            isButtonAPressed = true;
+            buttonAPressedTime = currentMillis;
+        } else if (currentMillis - buttonAPressedTime > 2000) {
+            // SOS Triggered!
+            currentState = STATE_SOS;
+            sosDisplayUntil = currentMillis + 4000;
+            M5.Lcd.fillScreen(ORANGE);
+
+            if (deviceConnected && pCommandChar) {
+                uint8_t sosCmd[] = { 0xFF }; // SOS signal
+                pCommandChar->setValue(sosCmd, 1);
+                pCommandChar->notify();
+            }
+
+            // High-pitched alert sound
+            M5.Beep.tone(4200);
+            delay(250);
+            M5.Beep.mute();
+            buttonAPressedTime = currentMillis + 10000; // prevent repeated triggers
+        }
+    } else {
+        isButtonAPressed = false;
+    }
+
+    // Button B (Side Button):
+    // In Alarm mode -> Snooze buzzer for 45s while keeping screen visible
+    // In Normal mode -> Cycle brightness to conserve battery
+    if (M5.BtnB.wasPressed()) {
+        if (currentState == STATE_ALARM_OUT_OF_RANGE) {
+            snoozeUntil = currentMillis + 45000;
+            stopBuzzer();
+        } else {
+            brightnessLevel = (brightnessLevel == 11) ? 8 : 11;
+            M5.Axp.ScreenBreath(brightnessLevel);
+        }
+    }
+
+    // ----------------------------------------------------
+    // 2. State Machine Handling
+    // ----------------------------------------------------
+    if (currentState == STATE_ALARM_OUT_OF_RANGE) {
+        // Run Siren if not snoozed
+        if (currentMillis > snoozeUntil) {
+            startBuzzerAlarm();
+        } else {
+            stopBuzzer();
+        }
+
+        // Refresh emergency alert screen every 1 second
+        if (currentMillis - lastDisplayUpdate >= 1000) {
+            lastDisplayUpdate = currentMillis;
+            drawEmergencyScreen();
+        }
+    } else if (currentState == STATE_SOS) {
+        if (currentMillis > sosDisplayUntil) {
+            currentState = STATE_NORMAL;
+            M5.Lcd.fillScreen(BLACK);
+        } else {
+            drawSOSScreen();
+        }
+    } else { // STATE_NORMAL
+        stopBuzzer();
+        if (currentMillis - lastDisplayUpdate >= 500) {
+            lastDisplayUpdate = currentMillis;
+            drawNormalWatchFace();
+        }
+    }
+
+    // ----------------------------------------------------
+    // 3. Periodic Battery Sync over BLE (every 10s)
+    // ----------------------------------------------------
+    if (deviceConnected && (currentMillis - lastBatteryUpdate >= 10000)) {
+        lastBatteryUpdate = currentMillis;
+        uint8_t bat = (uint8_t)getBatteryPercentage();
+        pBatteryChar->setValue(&bat, 1);
+        pBatteryChar->notify();
+    }
 }
 
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+// ==========================================
+// 🎨 Display Functions
+// ==========================================
+
+void drawNormalWatchFace() {
+    RTC_TimeTypeDef TimeStruct;
+    RTC_DateTypeDef DateStruct;
+    M5.Rtc.GetTime(&TimeStruct);
+    M5.Rtc.GetDate(&DateStruct);
+
+    int bat = getBatteryPercentage();
+
+    // --- Top Bar ---
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(CYAN, BLACK);
+    M5.Lcd.setCursor(8, 6);
+    M5.Lcd.printf("ID: %s", childName.c_str());
+
+    // BLE Status
+    if (deviceConnected) {
+        M5.Lcd.setTextColor(GREEN, BLACK);
+        M5.Lcd.setCursor(130, 6);
+        M5.Lcd.print("[BLE LINKED]");
+    } else {
+        M5.Lcd.setTextColor(TFT_DARKGREY, BLACK);
+        M5.Lcd.setCursor(130, 6);
+        M5.Lcd.print("[WAITING BLE]");
+    }
+
+    // Battery %
+    uint16_t batColor = (bat < 20) ? RED : ((bat < 50) ? YELLOW : GREEN);
+    M5.Lcd.setTextColor(batColor, BLACK);
+    M5.Lcd.setCursor(210, 6);
+    M5.Lcd.printf("%d%%", bat);
+
+    M5.Lcd.drawFastHLine(0, 18, 240, TFT_DARKGREY);
+
+    // --- Big Digital Clock (HH:MM:SS) ---
+    char timeBuffer[10];
+    sprintf(timeBuffer, "%02d:%02d:%02d", TimeStruct.Hours, TimeStruct.Minutes, TimeStruct.Seconds);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.setTextSize(4);
+    M5.Lcd.drawString(timeBuffer, 18, 36);
+
+    // --- Date String ---
+    char dateBuffer[20];
+    sprintf(dateBuffer, "%04d-%02d-%02d", DateStruct.Year, DateStruct.Month, DateStruct.Date);
+    M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.drawString(dateBuffer, 55, 82);
+
+    // --- Bottom Status Bar ---
+    M5.Lcd.drawFastHLine(0, 108, 240, TFT_NAVY);
+    M5.Lcd.setTextSize(1);
+    if (deviceConnected) {
+        M5.Lcd.setTextColor(TFT_GREENYELLOW, BLACK);
+        M5.Lcd.drawString("* Parent Link Protected *", 45, 118);
+    } else if (hasBeenConnectedEver) {
+        M5.Lcd.setTextColor(RED, BLACK);
+        M5.Lcd.drawString("! BLE LINK LOST !", 70, 118);
+    } else {
+        M5.Lcd.setTextColor(CYAN, BLACK);
+        M5.Lcd.drawString("Connect via Guardian Web App", 30, 118);
+    }
+}
+
+void drawEmergencyScreen() {
+    static bool flash = false;
+    flash = !flash;
+    uint16_t bg = flash ? RED : TFT_MAROON;
+
+    M5.Lcd.fillScreen(bg);
+
+    // Flashing Header
+    M5.Lcd.setTextColor(WHITE, bg);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.drawString("! LOST CHILD !", 10, 4);
+
+    // Left Info Box
+    M5.Lcd.fillRect(4, 24, 138, 107, BLACK);
+    M5.Lcd.drawRect(4, 24, 138, 107, WHITE);
+
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(YELLOW, BLACK);
+    M5.Lcd.setCursor(8, 30);
+    M5.Lcd.printf("Child: %s", childName.c_str());
+
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.setCursor(8, 44);
+    M5.Lcd.printf("Parent: %s", parentName.c_str());
+
+    M5.Lcd.setTextColor(CYAN, BLACK);
+    M5.Lcd.setCursor(8, 58);
+    M5.Lcd.print("CALL PARENT:");
+
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(TFT_GREENYELLOW, BLACK);
+    M5.Lcd.setCursor(8, 72);
+    M5.Lcd.print(parentPhone.c_str());
+
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);
+    M5.Lcd.drawString("Side Btn: Snooze", 8, 100);
+    M5.Lcd.drawString("Please help call!", 8, 114);
+
+    // Right Side: Native On-Screen QR Code (Scan to Call)
+    String qrData = "tel:" + parentPhone;
+    // qrcode(string, x, y, width, version)
+    // version 3 width 87 fits perfectly at x=148, y=24
+    M5.Lcd.qrcode(qrData.c_str(), 148, 24, 87, 3);
+
+    // QR Label
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(WHITE, bg);
+    M5.Lcd.drawString("Scan to Call", 152, 116);
+}
+
+void drawSOSScreen() {
+    M5.Lcd.setTextColor(BLACK, ORANGE);
+    M5.Lcd.setTextSize(3);
+    M5.Lcd.drawString("SOS SENT!", 40, 30);
+
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.drawString("Alerting Parent...", 25, 75);
+}
+
+// ==========================================
+// 🔊 Buzzer Controller
+// ==========================================
+void startBuzzerAlarm() {
+    unsigned long now = millis();
+    // Alternating siren tone: 3200Hz <-> 4000Hz every 250ms
+    if (now - lastBeepToggle >= 250) {
+        lastBeepToggle = now;
+        buzzerHighTone = !buzzerHighTone;
+        buzzerActive = !buzzerActive;
+
+        if (buzzerActive) {
+            M5.Beep.tone(buzzerHighTone ? 4000 : 3200);
+        } else {
+            M5.Beep.mute();
+        }
+    }
+}
+
+void stopBuzzer() {
+    M5.Beep.mute();
+    buzzerActive = false;
 }
