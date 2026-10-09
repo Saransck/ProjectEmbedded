@@ -4,6 +4,8 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <Preferences.h>
+#include <esp_bt.h>
+#include <esp_gap_ble_api.h>
 
 // ========================================================
 // 🛡️ Kids Guardian Smartwatch - M5StickC PLUS 1.1
@@ -15,6 +17,7 @@
 #define CHAR_TIME_UUID      "19b10002-e8f2-537e-4f6c-d104768a1214" // Time Sync (Write)
 #define CHAR_COMMAND_UUID   "19b10003-e8f2-537e-4f6c-d104768a1214" // Command & SOS (Read/Write/Notify)
 #define CHAR_BATTERY_UUID   "19b10004-e8f2-537e-4f6c-d104768a1214" // Battery % (Read/Notify)
+#define CHAR_RANGE_UUID     "19b10005-e8f2-537e-4f6c-d104768a1214" // Range & RSSI (Read/Notify)
 
 // Operating States
 enum WatchState {
@@ -38,10 +41,34 @@ BLECharacteristic* pInfoChar = nullptr;
 BLECharacteristic* pTimeChar = nullptr;
 BLECharacteristic* pCommandChar = nullptr;
 BLECharacteristic* pBatteryChar = nullptr;
+BLECharacteristic* pRangeChar = nullptr;
 
-bool deviceConnected = false;
+volatile bool deviceConnected = false;
 bool oldDeviceConnected = false;
 bool hasBeenConnectedEver = false;
+
+// RSSI & Range Tracking (Multi-level Distance Warning)
+esp_bd_addr_t peerAddress;
+volatile bool hasPeerAddress = false;
+volatile int8_t latestRssi = 0;
+volatile bool newRssiAvailable = false;
+int8_t filteredRssi = -60;
+uint8_t currentRangeLevel = 1; // 1 = Safe (ปกติ), 2 = Warning (เริ่มห่าง), 3 = Far (ไกลมาก)
+unsigned long lastRssiReadTime = 0;
+
+// Thread-safe flags between BLE tasks (Core 0) and main loop (Core 1)
+volatile bool pendingTimeSync = false;
+RTC_TimeTypeDef pendingTime;
+RTC_DateTypeDef pendingDate;
+
+volatile bool pendingInfoSave = false;
+String pendingParentName = "";
+String pendingParentPhone = "";
+String pendingChildName = "";
+
+volatile uint8_t pendingCommand = 0;
+volatile bool pendingAlarmRecover = false;
+volatile bool needScreenRedraw = true;
 
 // Timers & Control Variables
 unsigned long lastDisplayUpdate = 0;
@@ -71,34 +98,43 @@ void saveSettings();
 int getBatteryPercentage();
 
 // ==========================================
+// 📡 Custom GAP Event Handler (Read RSSI)
+// ==========================================
+void customGapHandler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) {
+    if (event == ESP_GAP_BLE_READ_RSSI_COMPLETE_EVT) {
+        if (param != nullptr && param->read_rssi_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            latestRssi = param->read_rssi_cmpl.rssi;
+            newRssiAvailable = true;
+        }
+    }
+}
+
+// ==========================================
 // 📡 BLE Server Callbacks
 // ==========================================
 class ServerCallbacks : public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
+    void onConnect(BLEServer* pServer) override {
         deviceConnected = true;
         hasBeenConnectedEver = true;
+        pendingAlarmRecover = true;
+    }
 
-        // Auto-recover from alarm when reconnected
-        if (currentState == STATE_ALARM_OUT_OF_RANGE) {
-            currentState = STATE_NORMAL;
-            stopBuzzer();
-            M5.Lcd.fillScreen(BLACK);
+    void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t* param) override {
+        deviceConnected = true;
+        hasBeenConnectedEver = true;
+        pendingAlarmRecover = true;
+        if (param != nullptr) {
+            memcpy(peerAddress, param->connect.remote_bda, sizeof(esp_bd_addr_t));
+            hasPeerAddress = true;
         }
     }
 
-    void onDisconnect(BLEServer* pServer) {
+    void onDisconnect(BLEServer* pServer) override {
         deviceConnected = false;
-
-        // If previously connected and armed, trigger Out-of-Range Alarm
-        if (alarmArmEnabled && hasBeenConnectedEver) {
-            currentState = STATE_ALARM_OUT_OF_RANGE;
-            alarmTriggerTime = millis();
-            M5.Axp.ScreenBreath(100); // 100% maximum brightness during alarm
-            M5.Lcd.fillScreen(RED);
-        }
-
-        // Restart Advertising so phone can reconnect
-        BLEDevice::startAdvertising();
+        hasPeerAddress = false;
+        currentRangeLevel = 0;
+        // Do NOT execute display/hardware I/O or startAdvertising here!
+        // The main loop() will handle safe restart and alarm triggering.
     }
 };
 
@@ -115,16 +151,15 @@ class InfoCallbacks : public BLECharacteristicCallbacks {
             int secondSep = payload.indexOf('|', firstSep + 1);
 
             if (firstSep > 0) {
-                parentName = payload.substring(0, firstSep);
+                pendingParentName = payload.substring(0, firstSep);
                 if (secondSep > firstSep) {
-                    parentPhone = payload.substring(firstSep + 1, secondSep);
-                    childName = payload.substring(secondSep + 1);
+                    pendingParentPhone = payload.substring(firstSep + 1, secondSep);
+                    pendingChildName = payload.substring(secondSep + 1);
                 } else {
-                    parentPhone = payload.substring(firstSep + 1);
+                    pendingParentPhone = payload.substring(firstSep + 1);
+                    pendingChildName = childName;
                 }
-                saveSettings();
-                M5.Lcd.fillScreen(BLACK);
-                drawNormalWatchFace();
+                pendingInfoSave = true;
             }
         }
     }
@@ -137,22 +172,16 @@ class TimeCallbacks : public BLECharacteristicCallbacks {
             // Format: "YYYY,MM,DD,hh,mm,ss"
             int year, month, day, hour, minute, second;
             if (sscanf(value.c_str(), "%d,%d,%d,%d,%d,%d", &year, &month, &day, &hour, &minute, &second) == 6) {
-                RTC_TimeTypeDef TimeStruct;
-                TimeStruct.Hours   = hour;
-                TimeStruct.Minutes = minute;
-                TimeStruct.Seconds = second;
-                M5.Rtc.SetTime(&TimeStruct);
+                pendingTime.Hours   = hour;
+                pendingTime.Minutes = minute;
+                pendingTime.Seconds = second;
 
-                RTC_DateTypeDef DateStruct;
-                DateStruct.Year    = year;
-                DateStruct.Month   = month;
-                DateStruct.Date    = day;
-                DateStruct.WeekDay = 1;
-                M5.Rtc.SetDate(&DateStruct);
+                pendingDate.Year    = year;
+                pendingDate.Month   = month;
+                pendingDate.Date    = day;
+                pendingDate.WeekDay = 1;
 
-                playChime();
-                M5.Lcd.fillScreen(BLACK);
-                drawNormalWatchFace();
+                pendingTimeSync = true;
             }
         }
     }
@@ -162,37 +191,33 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) {
         std::string value = pCharacteristic->getValue();
         if (value.length() > 0) {
-            uint8_t cmd = (uint8_t)value[0];
-            if (cmd == 0x01) {
-                // Find My Watch command -> Sound Loud Buzzer at 4200 Hz
-                for (int i = 0; i < 4; i++) {
-                    M5.Beep.tone(4200);
-                    delay(160);
-                    M5.Beep.mute();
-                    delay(80);
-                }
-            } else if (cmd == 0x02) {
-                // Stop buzzer
-                stopBuzzer();
-            } else if (cmd == 0x03) {
-                // Simulate lost mode
-                currentState = STATE_ALARM_OUT_OF_RANGE;
-                alarmTriggerTime = millis();
-                M5.Axp.ScreenBreath(100);
-                M5.Lcd.fillScreen(RED);
-            }
+            pendingCommand = (uint8_t)value[0];
         }
     }
 };
+
+// Clean and filter printable ASCII characters so TFT_eSPI screen never renders junk characters
+String sanitizeAscii(const String& str, const String& fallback) {
+    String out = "";
+    for (size_t i = 0; i < str.length(); i++) {
+        unsigned char c = (unsigned char)str[i];
+        if (c >= 32 && c <= 126) {
+            out += (char)c;
+        }
+    }
+    out.trim();
+    if (out.length() == 0) return fallback;
+    return out;
+}
 
 // ==========================================
 // ⚙️ Persistent Storage (NVS)
 // ==========================================
 void loadSettings() {
     prefs.begin("kidswatch", true);
-    parentName  = prefs.getString("p_name", "Mom/Dad");
-    parentPhone = prefs.getString("p_phone", "0812345678");
-    childName   = prefs.getString("c_name", "Kiddo");
+    parentName  = sanitizeAscii(prefs.getString("p_name", "Mom/Dad"), "Mom/Dad");
+    parentPhone = sanitizeAscii(prefs.getString("p_phone", "0812345678"), "0812345678");
+    childName   = sanitizeAscii(prefs.getString("c_name", "Kiddo"), "Kiddo");
     prefs.end();
 }
 
@@ -248,6 +273,12 @@ void setup() {
         devName = devName.substring(0, 20);
     }
     BLEDevice::init(devName.c_str());
+    BLEDevice::setMTU(517);
+
+    // Boost BLE transmit power to Maximum (+9dBm) for rock-solid stability & range
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_CONN_HDL0, ESP_PWR_LVL_P9);
 
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new ServerCallbacks());
@@ -291,14 +322,28 @@ void setup() {
     );
     pBatteryChar->addDescriptor(new BLE2902());
 
+    // 5. Range & RSSI Characteristic (Proximity Tracking)
+    pRangeChar = pService->createCharacteristic(
+        CHAR_RANGE_UUID,
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pRangeChar->addDescriptor(new BLE2902());
+    uint8_t initRange[2] = { 1, 60 }; // Level 1 (Safe), 60dBm
+    pRangeChar->setValue(initRange, 2);
+
+    BLEDevice::setCustomGapHandler(customGapHandler);
+
     pService->start();
 
     // Start Advertising
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06); // iOS optimization
-    pAdvertising->setMinPreferred(0x12);
+
+    // Apple BLE accessory guidelines: min connection interval >= 15ms (0x10 = 20ms, 0x30 = 60ms)
+    pAdvertising->setMinPreferred(0x10);
+    pAdvertising->setMaxPreferred(0x30);
 
     BLEAdvertisementData advData;
     advData.setFlags(0x06);
@@ -321,6 +366,153 @@ void setup() {
 void loop() {
     M5.update();
     unsigned long currentMillis = millis();
+
+    // ----------------------------------------------------
+    // 0. Thread-Safe BLE Event Handling & Advertising Restart
+    // ----------------------------------------------------
+    // Connecting Transition
+    if (deviceConnected && !oldDeviceConnected) {
+        oldDeviceConnected = true;
+        needScreenRedraw = true;
+        currentRangeLevel = 1;
+        alarmArmEnabled = true; // Re-arm alarm on reconnection
+        if (currentState == STATE_ALARM_OUT_OF_RANGE) {
+            currentState = STATE_NORMAL;
+            stopBuzzer();
+            M5.Lcd.fillScreen(BLACK);
+        }
+    }
+
+    // Disconnecting Transition
+    if (!deviceConnected && oldDeviceConnected) {
+        oldDeviceConnected = false;
+        needScreenRedraw = true;
+        currentRangeLevel = 0;
+
+        if (alarmArmEnabled && hasBeenConnectedEver) {
+            currentState = STATE_ALARM_OUT_OF_RANGE;
+            alarmTriggerTime = currentMillis;
+            M5.Axp.ScreenBreath(100);
+            M5.Lcd.fillScreen(RED);
+        }
+
+        // Restart Advertising gracefully from loop task
+        delay(150); // Give the BT controller time to cleanly complete teardown
+        if (pServer) {
+            pServer->startAdvertising();
+        }
+    }
+
+    // Pending Alarm Recovery
+    if (pendingAlarmRecover) {
+        pendingAlarmRecover = false;
+        if (currentState == STATE_ALARM_OUT_OF_RANGE) {
+            currentState = STATE_NORMAL;
+            stopBuzzer();
+            M5.Lcd.fillScreen(BLACK);
+            needScreenRedraw = true;
+        }
+    }
+
+    // Pending Time Sync from BLE
+    if (pendingTimeSync) {
+        pendingTimeSync = false;
+        M5.Rtc.SetTime(&pendingTime);
+        M5.Rtc.SetDate(&pendingDate);
+        playChime();
+        M5.Lcd.fillScreen(BLACK);
+        drawNormalWatchFace();
+    }
+
+    // Pending Info Save from BLE
+    if (pendingInfoSave) {
+        pendingInfoSave = false;
+        parentName = sanitizeAscii(pendingParentName, "Mom/Dad");
+        parentPhone = sanitizeAscii(pendingParentPhone, "0812345678");
+        if (pendingChildName.length() > 0) {
+            childName = sanitizeAscii(pendingChildName, "Kiddo");
+        }
+        saveSettings();
+        M5.Lcd.fillScreen(BLACK);
+        drawNormalWatchFace();
+    }
+
+    // Pending Command from BLE
+    if (pendingCommand != 0) {
+        uint8_t cmd = pendingCommand;
+        pendingCommand = 0;
+        if (cmd == 0x01) {
+            // Find My Watch command -> Sound Buzzer
+            for (int i = 0; i < 4; i++) {
+                M5.Beep.tone(4200);
+                delay(140);
+                M5.Beep.mute();
+                delay(60);
+            }
+        } else if (cmd == 0x02) {
+            stopBuzzer();
+        } else if (cmd == 0x03) {
+            currentState = STATE_ALARM_OUT_OF_RANGE;
+            alarmTriggerTime = currentMillis;
+            M5.Axp.ScreenBreath(100);
+            M5.Lcd.fillScreen(RED);
+        } else if (cmd == 0x04) {
+            // Safe Disconnect / Disarm from web app
+            alarmArmEnabled = false;
+            hasBeenConnectedEver = false;
+            currentState = STATE_NORMAL;
+            stopBuzzer();
+            M5.Lcd.fillScreen(BLACK);
+            drawNormalWatchFace();
+        }
+    }
+
+    // ----------------------------------------------------
+    // 0.1 Periodic Proximity & RSSI Distance Tracking
+    // ----------------------------------------------------
+    if (deviceConnected && hasPeerAddress && (currentMillis - lastRssiReadTime >= 1200)) {
+        lastRssiReadTime = currentMillis;
+        esp_ble_gap_read_rssi(peerAddress);
+    }
+
+    if (newRssiAvailable) {
+        newRssiAvailable = false;
+        if (latestRssi != 0 && latestRssi != 127) {
+            // Exponential moving average filter for smooth distance readings
+            filteredRssi = (int8_t)((filteredRssi * 3 + latestRssi) / 4);
+
+            // Proximity thresholds:
+            // RSSI > -72 dBm: Level 1 (Safe / ใกล้ตัว 0 - 5m)
+            // -72 dBm to -84 dBm: Level 2 (Warning / เริ่มออกห่าง 5 - 10m)
+            // <= -85 dBm: Level 3 (Far / เสี่ยงหลุดระยะ 10 - 15m+)
+            uint8_t newLevel = 1;
+            if (filteredRssi <= -85) {
+                newLevel = 3;
+            } else if (filteredRssi <= -72) {
+                newLevel = 2;
+            } else {
+                newLevel = 1;
+            }
+
+            if (newLevel != currentRangeLevel) {
+                // If moving from Safe to Warning (เด็กเริ่มเดินออกห่าง), soft reminder beep on watch
+                if (newLevel == 2 && currentRangeLevel == 1) {
+                    M5.Beep.tone(3200);
+                    delay(50);
+                    M5.Beep.mute();
+                }
+                currentRangeLevel = newLevel;
+                needScreenRedraw = true;
+            }
+
+            // Send real-time notification to Web Companion App
+            if (pRangeChar && deviceConnected) {
+                uint8_t rangeData[2] = { currentRangeLevel, (uint8_t)abs(filteredRssi) };
+                pRangeChar->setValue(rangeData, 2);
+                pRangeChar->notify();
+            }
+        }
+    }
 
     // ----------------------------------------------------
     // 1. Button Inputs
@@ -386,13 +578,15 @@ void loop() {
         if (currentMillis > sosDisplayUntil) {
             currentState = STATE_NORMAL;
             M5.Lcd.fillScreen(BLACK);
+            needScreenRedraw = true;
         } else {
             drawSOSScreen();
         }
     } else { // STATE_NORMAL
         stopBuzzer();
-        if (currentMillis - lastDisplayUpdate >= 500) {
+        if (currentMillis - lastDisplayUpdate >= 1000 || needScreenRedraw) {
             lastDisplayUpdate = currentMillis;
+            needScreenRedraw = false;
             drawNormalWatchFace();
         }
     }
@@ -424,13 +618,24 @@ void drawNormalWatchFace() {
     M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(CYAN, BLACK);
     M5.Lcd.setCursor(8, 6);
-    M5.Lcd.printf("ID: %s", childName.c_str());
+    String safeChild = sanitizeAscii(childName, "Child");
+    M5.Lcd.printf("ID: %s", safeChild.c_str());
 
-    // BLE Status
+    // BLE Status & Distance Warning
     if (deviceConnected) {
-        M5.Lcd.setTextColor(GREEN, BLACK);
-        M5.Lcd.setCursor(130, 6);
-        M5.Lcd.print("[BLE LINKED]");
+        if (currentRangeLevel == 2) {
+            M5.Lcd.setTextColor(YELLOW, BLACK);
+            M5.Lcd.setCursor(110, 6);
+            M5.Lcd.printf("[FAR %ddB]", filteredRssi);
+        } else if (currentRangeLevel == 3) {
+            M5.Lcd.setTextColor(ORANGE, BLACK);
+            M5.Lcd.setCursor(110, 6);
+            M5.Lcd.printf("[LIMIT %ddB]", filteredRssi);
+        } else {
+            M5.Lcd.setTextColor(GREEN, BLACK);
+            M5.Lcd.setCursor(110, 6);
+            M5.Lcd.printf("[NEAR %ddB]", filteredRssi);
+        }
     } else {
         M5.Lcd.setTextColor(TFT_DARKGREY, BLACK);
         M5.Lcd.setCursor(130, 6);
@@ -463,8 +668,16 @@ void drawNormalWatchFace() {
     M5.Lcd.drawFastHLine(0, 108, 240, TFT_NAVY);
     M5.Lcd.setTextSize(1);
     if (deviceConnected) {
-        M5.Lcd.setTextColor(TFT_GREENYELLOW, BLACK);
-        M5.Lcd.drawString("* Parent Link Protected *", 45, 118);
+        if (currentRangeLevel == 2) {
+            M5.Lcd.setTextColor(YELLOW, BLACK);
+            M5.Lcd.drawString("! Warning: Getting Far !", 40, 118);
+        } else if (currentRangeLevel == 3) {
+            M5.Lcd.setTextColor(ORANGE, BLACK);
+            M5.Lcd.drawString("!! Very Far! Please Return !!", 25, 118);
+        } else {
+            M5.Lcd.setTextColor(TFT_GREENYELLOW, BLACK);
+            M5.Lcd.drawString("* Parent Link Protected *", 45, 118);
+        }
     } else if (hasBeenConnectedEver) {
         M5.Lcd.setTextColor(RED, BLACK);
         M5.Lcd.drawString("! BLE LINK LOST !", 70, 118);
@@ -486,6 +699,10 @@ void drawEmergencyScreen() {
     M5.Lcd.setTextSize(2);
     M5.Lcd.drawString("! LOST CHILD !", 38, 4);
 
+    String safeChild = sanitizeAscii(childName, "Kiddo");
+    String safeParent = sanitizeAscii(parentName, "Parent");
+    String safePhone = sanitizeAscii(parentPhone, "0812345678");
+
     // Full-Width Emergency Info Card (232x107)
     M5.Lcd.fillRect(4, 24, 232, 107, BLACK);
     M5.Lcd.drawRect(4, 24, 232, 107, WHITE);
@@ -494,19 +711,19 @@ void drawEmergencyScreen() {
     M5.Lcd.setTextSize(2);
     M5.Lcd.setTextColor(YELLOW, BLACK);
     M5.Lcd.setCursor(12, 30);
-    M5.Lcd.printf("CHILD: %s", childName.c_str());
+    M5.Lcd.printf("CHILD: %s", safeChild.c_str());
 
     // Parent Name
     M5.Lcd.setTextSize(2);
     M5.Lcd.setTextColor(WHITE, BLACK);
     M5.Lcd.setCursor(12, 48);
-    M5.Lcd.printf("PARENT: %s", parentName.c_str());
+    M5.Lcd.printf("PARENT: %s", safeParent.c_str());
 
     // Big Bold Emergency Phone Number
     M5.Lcd.setTextSize(3);
     M5.Lcd.setTextColor(TFT_GREENYELLOW, BLACK);
     M5.Lcd.setCursor(12, 68);
-    M5.Lcd.print(parentPhone.c_str());
+    M5.Lcd.print(safePhone.c_str());
 
     // Action Hint
     M5.Lcd.setTextSize(1);

@@ -7,6 +7,7 @@ const CHAR_INFO_UUID      = "19b10001-e8f2-537e-4f6c-d104768a1214";
 const CHAR_TIME_UUID      = "19b10002-e8f2-537e-4f6c-d104768a1214";
 const CHAR_COMMAND_UUID   = "19b10003-e8f2-537e-4f6c-d104768a1214";
 const CHAR_BATTERY_UUID   = "19b10004-e8f2-537e-4f6c-d104768a1214";
+const CHAR_RANGE_UUID     = "19b10005-e8f2-537e-4f6c-d104768a1214";
 
 // State
 let bleDevice = null;
@@ -15,8 +16,10 @@ let infoChar = null;
 let timeChar = null;
 let commandChar = null;
 let batteryChar = null;
+let rangeChar = null;
 
 let isConnected = false;
+let currentRangeLevel = 1; // 1 = Safe, 2 = Warning (เริ่มห่าง), 3 = Far (ไกลมาก)
 let audioCtx = null;
 let sirenInterval = null;
 let isSirenPlaying = false;
@@ -27,6 +30,7 @@ const connPill = document.getElementById('connPill');
 const connDot = document.getElementById('connDot');
 const connText = document.getElementById('connText');
 const btnConnect = document.getElementById('btnConnect');
+const btnDisconnect = document.getElementById('btnDisconnect');
 const btnSyncTime = document.getElementById('btnSyncTime');
 const btnRingWatch = document.getElementById('btnRingWatch');
 const btnSimulateLost = document.getElementById('btnSimulateLost');
@@ -38,10 +42,16 @@ const alertBanner = document.getElementById('alertBanner');
 const alertTitle = document.getElementById('alertTitle');
 const alertDesc = document.getElementById('alertDesc');
 
+const warnBanner = document.getElementById('warnBanner');
+const warnTitle = document.getElementById('warnTitle');
+const warnDesc = document.getElementById('warnDesc');
+
 const batText = document.getElementById('batText');
 const batBar = document.getElementById('batBar');
 const watchTimeText = document.getElementById('watchTimeText');
 const rangeStatusText = document.getElementById('rangeStatusText');
+const rssiText = document.getElementById('rssiText');
+const radarAnim = document.getElementById('radarAnim');
 const watchNameBadge = document.getElementById('watchNameBadge');
 const logContainer = document.getElementById('logContainer');
 
@@ -68,6 +78,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Attach Event Listeners
     btnConnect.addEventListener('click', toggleConnect);
+    if (btnDisconnect) {
+        btnDisconnect.addEventListener('click', handleManualDisconnect);
+    }
     btnSyncTime.addEventListener('click', syncCurrentTimeToWatch);
     btnRingWatch.addEventListener('click', ringWatchBuzzer);
     btnSimulateLost.addEventListener('click', toggleSirenSimulation);
@@ -101,15 +114,103 @@ function initQRCode() {
     });
 }
 
+// Convert Thai characters to clean English romanization for Watch LCD
+function convertThaiToRoman(text) {
+    if (!text) return "Kiddo";
+    const hasThai = /[\u0E00-\u0E7F]/.test(text);
+    if (!hasThai) return text;
+
+    // Common names & titles dictionary
+    const commonMap = {
+        'น้องภูมิ': 'Poom', 'ภูมิ': 'Poom',
+        'คุณแม่': 'Mom', 'แม่': 'Mom', 'มามี้': 'Mommy', 'หม่าม้า': 'Mama',
+        'คุณพ่อ': 'Dad', 'พ่อ': 'Dad', 'ปะป๊า': 'Papa',
+        'คุณยาย': 'Grandma', 'ยาย': 'Grandma', 'คุณย่า': 'Grandma', 'ย่า': 'Grandma',
+        'คุณตา': 'Grandpa', 'ตา': 'Grandpa', 'คุณปู่': 'Grandpa', 'ปู่': 'Grandpa',
+        'น้องกานต์': 'Karn', 'กานต์': 'Karn',
+        'น้องนนท์': 'Nont', 'นนท์': 'Nont',
+        'น้องฟ้า': 'Fah', 'ฟ้า': 'Fah',
+        'น้องน้ำ': 'Nam', 'น้ำ': 'Nam',
+        'น้องกาย': 'Guy', 'กาย': 'Guy',
+        'น้องวิน': 'Win', 'วิน': 'Win',
+        'น้องเมฆ': 'Mek', 'เมฆ': 'Mek',
+        'น้องบอส': 'Boss', 'บอส': 'Boss',
+        'น้องพลอย': 'Ploy', 'พลอย': 'Ploy',
+        'น้องมิน': 'Min', 'มิน': 'Min',
+        'น้องเบล': 'Belle', 'เบล': 'Belle',
+        'น้องต้น': 'Ton', 'ต้น': 'Ton',
+        'น้องปัน': 'Pun', 'ปัน': 'Pun',
+        'น้องพี': 'Pee', 'พี': 'Pee',
+        'น้องเจ': 'Jay', 'เจ': 'Jay',
+        'น้องมาร์ค': 'Mark', 'มาร์ค': 'Mark',
+        'น้องเอวา': 'Ava', 'เอวา': 'Ava',
+        'น้องไบรท์': 'Bright', 'ไบรท์': 'Bright',
+        'น้องข้าว': 'Khao', 'ข้าว': 'Khao',
+        'น้องต้นข้าว': 'Tonkhao', 'ต้นข้าว': 'Tonkhao',
+        'น้องพรีม': 'Preme', 'พรีม': 'Preme',
+        'น้องคุณ': 'Khun', 'คุณ': 'Khun',
+        'น้องริว': 'Ryu', 'ริว': 'Ryu',
+        'น้องลูกพีช': 'Peach', 'ลูกพีช': 'Peach',
+        'น้องชิน': 'Chin', 'ชิน': 'Chin'
+    };
+
+    let trimmed = text.trim();
+    if (commonMap[trimmed]) return commonMap[trimmed];
+
+    // Strip "น้อง" or "คุณ" prefixes if present
+    let cleaned = trimmed.replace(/^(น้อง|คุณ)/, '');
+    if (commonMap[cleaned]) return commonMap[cleaned];
+
+    // Consonant & Vowel transliteration fallback
+    const thaiConsonants = {
+        'ก': 'K', 'ข': 'Kh', 'ฃ': 'Kh', 'ค': 'Kh', 'ฅ': 'Kh', 'ฆ': 'Kh',
+        'ง': 'Ng', 'จ': 'Ch', 'ฉ': 'Ch', 'ช': 'Ch', 'ซ': 'S', 'ฌ': 'Ch',
+        'ญ': 'Y', 'ด': 'D', 'ต': 'T', 'ถ': 'Th', 'ท': 'Th', 'ธ': 'Th',
+        'น': 'N', 'บ': 'B', 'ป': 'P', 'ผ': 'Ph', 'ฝ': 'F', 'พ': 'Ph',
+        'ฟ': 'F', 'ภ': 'Ph', 'ม': 'M', 'ย': 'Y', 'ร': 'R', 'ฤ': 'Rue',
+        'ล': 'L', 'ว': 'W', 'ศ': 'S', 'ษ': 'S', 'ส': 'S', 'ห': 'H',
+        'ฬ': 'L', 'อ': 'O', 'ฮ': 'H'
+    };
+
+    const thaiVowels = {
+        'ะ': 'a', 'า': 'a', 'ำ': 'am', 'ิ': 'i', 'ี': 'ee', 'ึ': 'ue', 'ื': 'ue',
+        'ุ': 'u', 'ู': 'oo', 'เ': 'e', 'แ': 'ae', 'โ': 'o', 'ใ': 'ai', 'ไ': 'ai'
+    };
+
+    let result = '';
+    for (let char of cleaned) {
+        if (thaiConsonants[char]) {
+            result += thaiConsonants[char];
+        } else if (thaiVowels[char]) {
+            result += thaiVowels[char];
+        } else if (/^[a-zA-Z0-9\s_-]$/.test(char)) {
+            result += char;
+        }
+    }
+    result = result.trim();
+    if (result.length > 0) {
+        return result.charAt(0).toUpperCase() + result.slice(1).toLowerCase();
+    }
+    return 'Kiddo';
+}
+
 function updateMockupPreview() {
-    const cName = inputChildName.value.trim() || "น้องภูมิ";
-    const pName = inputParentName.value.trim() || "คุณแม่";
+    const cName = inputChildName.value.trim() || "Poom";
+    const pName = inputParentName.value.trim() || "Mom";
     const pPhone = inputParentPhone.value.trim() || "0812345678";
 
-    prevChild.textContent = cName;
-    prevParent.textContent = pName;
+    const cRoman = convertThaiToRoman(cName);
+    const pRoman = convertThaiToRoman(pName);
+
+    prevChild.textContent = cRoman;
+    prevParent.textContent = pRoman;
     prevPhone.textContent = pPhone;
-    watchNameBadge.textContent = `KidsWatch-${cName}`;
+    watchNameBadge.textContent = `KidsWatch-${cRoman}`;
+
+    const childHint = document.getElementById('childHint');
+    const parentHint = document.getElementById('parentHint');
+    if (childHint) childHint.textContent = `แสดงบนนาฬิกา: ${cRoman}`;
+    if (parentHint) parentHint.textContent = `แสดงบนนาฬิกา: ${pRoman}`;
 
     if (qrCodeObj) {
         qrCodeObj.clear();
@@ -128,9 +229,20 @@ function loadSavedFormData() {
     const savedParent = localStorage.getItem('guardian_parent');
     const savedPhone = localStorage.getItem('guardian_phone');
 
-    if (savedChild) inputChildName.value = savedChild;
-    if (savedParent) inputParentName.value = savedParent;
-    if (savedPhone) inputParentPhone.value = savedPhone;
+    inputChildName.value = savedChild || "Poom";
+    inputParentName.value = savedParent || "Mom";
+    inputParentPhone.value = savedPhone || "0812345678";
+}
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function safeWrite(characteristic, data) {
+    if (!characteristic) return;
+    if (typeof characteristic.writeValueWithResponse === 'function') {
+        await characteristic.writeValueWithResponse(data);
+    } else {
+        await characteristic.writeValue(data);
+    }
 }
 
 // ==========================================
@@ -180,22 +292,38 @@ async function toggleConnect() {
 
         gattServer = await bleDevice.gatt.connect();
         log('เชื่อมต่อสำเร็จ! กำลังค้นหา Guardian GATT Services...', 'success');
+        await sleep(150); // ให้เวลา BLE controller จัดการ Connection Parameters
 
         const service = await gattServer.getPrimaryService(SERVICE_UUID);
+        await sleep(60);
 
         // Get Characteristics
         infoChar = await service.getCharacteristic(CHAR_INFO_UUID);
         timeChar = await service.getCharacteristic(CHAR_TIME_UUID);
         commandChar = await service.getCharacteristic(CHAR_COMMAND_UUID);
         batteryChar = await service.getCharacteristic(CHAR_BATTERY_UUID);
+        await sleep(60);
 
         // Listen for Battery changes
         await batteryChar.startNotifications();
         batteryChar.addEventListener('characteristicvaluechanged', onBatteryChanged);
+        await sleep(60);
 
         // Listen for SOS commands from Watch
         await commandChar.startNotifications();
         commandChar.addEventListener('characteristicvaluechanged', onCommandReceived);
+        await sleep(60);
+
+        // Get and listen for Proximity / RSSI Range updates
+        try {
+            rangeChar = await service.getCharacteristic(CHAR_RANGE_UUID);
+            await sleep(60);
+            await rangeChar.startNotifications();
+            rangeChar.addEventListener('characteristicvaluechanged', onRangeChanged);
+        } catch (e) {
+            console.warn('Range characteristic not available', e);
+        }
+        await sleep(60);
 
         // Read initial battery
         try {
@@ -204,6 +332,7 @@ async function toggleConnect() {
         } catch (e) {
             console.warn('Initial bat read error', e);
         }
+        await sleep(60);
 
         // Set state to Connected
         setConnectedState(true);
@@ -211,6 +340,7 @@ async function toggleConnect() {
 
         // Automatically sync current time to watch
         await syncCurrentTimeToWatch();
+        await sleep(80);
 
         // Automatically sync registered parent info to watch
         await sendInfoToWatch();
@@ -225,9 +355,37 @@ async function toggleConnect() {
     }
 }
 
+let isManualDisconnect = false;
+
+async function handleManualDisconnect() {
+    log('กำลังตัดการเชื่อมต่อกับนาฬิกาอย่างปลอดภัย (Safe Disconnect)...', 'info');
+    isManualDisconnect = true;
+    try {
+        if (commandChar && isConnected) {
+            const disarmCmd = new Uint8Array([0x04]); // 0x04 = Disarm & Safe Disconnect
+            await safeWrite(commandChar, disarmCmd);
+            await sleep(150);
+        }
+    } catch (e) {
+        console.warn('Disarm command error', e);
+    }
+
+    disconnectBLE();
+    log('ตัดการเชื่อมต่อเรียบร้อยแล้ว (ไม่ส่งเสียงไซเรน)', 'success');
+}
+
 function onDisconnected() {
-    log('🚨 ขาดการเชื่อมต่อกับนาฬิกา! (Out of Range / หลุดระยะ)', 'error');
-    setConnectedState(false, true); // Trigger out-of-range alarm!
+    const wasConnected = isConnected;
+    const manual = isManualDisconnect;
+    isManualDisconnect = false;
+
+    if (manual) {
+        log('ตัดการเชื่อมต่อเรียบร้อยแล้ว (Safe Disconnect)', 'info');
+        setConnectedState(false, false);
+    } else {
+        log('🚨 ขาดการเชื่อมต่อกับนาฬิกา! (Out of Range / หลุดระยะ)', 'error');
+        setConnectedState(false, wasConnected); // Only trigger emergency siren if it was genuinely connected
+    }
 }
 
 function disconnectBLE() {
@@ -235,6 +393,90 @@ function disconnectBLE() {
         bleDevice.gatt.disconnect();
     }
     setConnectedState(false);
+}
+
+// ==========================================
+// 📡 Proximity & RSSI Range Handler
+// ==========================================
+function onRangeChanged(event) {
+    const value = event.target.value;
+    if (value.byteLength >= 2) {
+        const level = value.getUint8(0);
+        const rssiAbs = value.getUint8(1);
+        updateProximityStatus(level, -rssiAbs);
+    }
+}
+
+function updateProximityStatus(level, rssi) {
+    if (rssiText) {
+        let quality = 'ใกล้ตัว';
+        if (rssi <= -85) quality = 'ไกลมาก';
+        else if (rssi <= -72) quality = 'เริ่มห่าง';
+        rssiText.textContent = `${rssi} dBm (${quality})`;
+        if (level === 1) rssiText.style.color = 'var(--accent-emerald)';
+        else if (level === 2) rssiText.style.color = 'var(--accent-amber)';
+        else rssiText.style.color = '#f97316';
+    }
+
+    if (!isConnected) return;
+
+    if (level === 1) { // 🟢 ปลอดภัย (Safe)
+        rangeStatusText.textContent = 'ปลอดภัย (~0-5m)';
+        rangeStatusText.className = 'stat-value safe-tag';
+        if (radarAnim) radarAnim.className = 'radar-circle';
+        if (warnBanner) warnBanner.style.display = 'none';
+    } else if (level === 2) { // 🟡 เตือน: เด็กเริ่มออกห่าง (~5-10m)
+        rangeStatusText.textContent = 'เริ่มออกห่าง (~5-10m)';
+        rangeStatusText.className = 'stat-value warn-tag';
+        if (radarAnim) radarAnim.className = 'radar-circle warning';
+        if (warnBanner) {
+            warnTitle.textContent = '⚠️ เด็กเริ่มเดินออกห่างแล้ว (~5–10 เมตร)';
+            warnDesc.textContent = `สัญญาณบลูทูธเริ่มอ่อนลง (${rssi} dBm) กรุณาสอดส่องมองหาน้อง`;
+            warnBanner.style.display = 'block';
+        }
+        if (currentRangeLevel !== 2) {
+            playSoftWarningChime();
+            log(`⚠️ สัญญาณเตือน: เด็กเริ่มเดินออกห่างแล้ว (${rssi} dBm)`, 'warn');
+        }
+    } else if (level === 3) { // 🟠 ไกลมาก เสี่ยงหลุดระยะ (~10-15m)
+        rangeStatusText.textContent = 'ไกลมาก! เสี่ยงหลุด (~10-15m)';
+        rangeStatusText.className = 'stat-value danger-tag';
+        if (radarAnim) radarAnim.className = 'radar-circle warning';
+        if (warnBanner) {
+            warnTitle.textContent = '🚨 เด็กอยู่ห่างมาก (~10–15 เมตร) ใกล้หลุดระยะ!';
+            warnDesc.textContent = `สัญญาณอ่อนมาก (${rssi} dBm) เสี่ยงหลุดการเชื่อมต่อ กรุณาเดินเข้าไปใกล้น้อง`;
+            warnBanner.style.display = 'block';
+        }
+        if (currentRangeLevel !== 3) {
+            playSoftWarningChime();
+            log(`🚨 สัญญาณวิกฤต: เด็กอยู่ห่างมาก เสี่ยงหลุดระยะ (${rssi} dBm)`, 'warn');
+        }
+    }
+
+    currentRangeLevel = level;
+}
+
+function playSoftWarningChime() {
+    try {
+        initAudio();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.setValueAtTime(660, now + 0.12);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(now);
+        osc.stop(now + 0.35);
+
+        if (navigator.vibrate) {
+            try { navigator.vibrate([150, 80, 150]); } catch (e) {}
+        }
+    } catch (e) {}
 }
 
 // ==========================================
@@ -347,7 +589,7 @@ async function syncCurrentTimeToWatch() {
         const now = new Date();
         const timeStr = `${now.getFullYear()},${now.getMonth() + 1},${now.getDate()},${now.getHours()},${now.getMinutes()},${now.getSeconds()}`;
         const encoder = new TextEncoder();
-        await timeChar.writeValue(encoder.encode(timeStr));
+        await safeWrite(timeChar, encoder.encode(timeStr));
 
         const timeDisplay = now.toLocaleTimeString('th-TH');
         watchTimeText.textContent = timeDisplay;
@@ -370,14 +612,19 @@ async function handleSaveInfo() {
 async function sendInfoToWatch() {
     if (!infoChar) return;
     try {
-        const cName = inputChildName.value.trim() || "Kiddo";
-        const pName = inputParentName.value.trim() || "Mom/Dad";
+        const cName = inputChildName.value.trim() || "Poom";
+        const pName = inputParentName.value.trim() || "Mom";
         const pPhone = inputParentPhone.value.trim() || "0812345678";
-        const payload = `${pName}|${pPhone}|${cName}`;
+
+        // Convert Thai to clean English Romanization for watch LCD
+        const cNameWatch = convertThaiToRoman(cName);
+        const pNameWatch = convertThaiToRoman(pName);
+
+        const payload = `${pNameWatch}|${pPhone}|${cNameWatch}`;
 
         const encoder = new TextEncoder();
-        await infoChar.writeValue(encoder.encode(payload));
-        log(`บันทึกข้อมูลผู้ปกครองลง Flash บนนาฬิกาสำเร็จ: ${payload}`, 'success');
+        await safeWrite(infoChar, encoder.encode(payload));
+        log(`บันทึกข้อมูลเข้าสู่นาฬิกาสำเร็จ: ${cNameWatch} | ${pNameWatch} (${pPhone})`, 'success');
     } catch (e) {
         log(`เกิดข้อผิดพลาดในการส่งข้อมูล: ${e.message}`, 'error');
     }
@@ -387,7 +634,7 @@ async function ringWatchBuzzer() {
     if (!commandChar) return;
     try {
         const cmd = new Uint8Array([0x01]); // 0x01 = Ring buzzer
-        await commandChar.writeValue(cmd);
+        await safeWrite(commandChar, cmd);
         log('ส่งคำสั่งให้นาฬิกาส่งเสียง Beep ค้นหาสำเร็จ 🔔', 'success');
     } catch (e) {
         log(`ส่งคำสั่งไม่สำเร็จ: ${e.message}`, 'error');
@@ -420,27 +667,39 @@ function setConnectedState(connected, isAlarmTriggered = false) {
     if (connected) {
         connPill.className = 'connection-status-pill connected';
         connText.textContent = 'เชื่อมต่อแล้ว (Connected)';
-        btnConnect.querySelector('span').textContent = 'ตัดการเชื่อมต่อ (Disconnect)';
-        btnConnect.classList.remove('btn-primary');
-        btnConnect.classList.add('btn-outline');
+        
+        btnConnect.style.display = 'none';
+        if (btnDisconnect) btnDisconnect.style.display = 'inline-flex';
 
         btnSyncTime.disabled = false;
         btnRingWatch.disabled = false;
 
-        rangeStatusText.textContent = 'ปลอดภัย (Safe)';
+        rangeStatusText.textContent = 'ปลอดภัย (~0-5m)';
         rangeStatusText.className = 'stat-value safe-tag';
         rangeStatusText.style.color = 'var(--accent-emerald)';
+
+        if (warnBanner) warnBanner.style.display = 'none';
+        if (radarAnim) radarAnim.className = 'radar-circle';
+        currentRangeLevel = 1;
 
         dismissEmergencyAlarm();
     } else {
         connPill.className = 'connection-status-pill';
         connText.textContent = 'ยังไม่เชื่อมต่อ (Disconnected)';
-        btnConnect.querySelector('span').textContent = 'เชื่อมต่อ BLE กับนาฬิกา';
-        btnConnect.classList.add('btn-primary');
-        btnConnect.classList.remove('btn-outline');
+
+        btnConnect.style.display = 'inline-flex';
+        if (btnDisconnect) btnDisconnect.style.display = 'none';
 
         btnSyncTime.disabled = true;
         btnRingWatch.disabled = true;
+
+        if (warnBanner) warnBanner.style.display = 'none';
+        if (rssiText) {
+            rssiText.textContent = '-- dBm';
+            rssiText.style.color = 'var(--text-muted)';
+        }
+        if (radarAnim) radarAnim.className = 'radar-circle';
+        currentRangeLevel = 0;
 
         if (isAlarmTriggered) {
             triggerEmergencyAlarm("⚠️ ออกนอกระยะเชื่อมต่อ! (Out of Range)", "นาฬิกาส่งเสียงร้องเตือนและแสดงเบอร์โทรฉุกเฉินบนหน้าจอแล้ว");

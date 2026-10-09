@@ -213,6 +213,18 @@ body {
     animation: alertBounce 1s infinite alternate ease-in-out;
 }
 
+.alert-banner.warning-mode {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.35));
+    border: 1px solid rgba(245, 158, 11, 0.6);
+    box-shadow: 0 0 25px rgba(245, 158, 11, 0.25);
+    animation: alertBounce 1.5s infinite alternate ease-in-out;
+}
+
+.alert-icon-pulse.warn-pulse {
+    background: var(--accent-amber);
+    animation: iconThrob 1s infinite alternate;
+}
+
 @keyframes alertBounce {
     0% { transform: translateY(0); }
     100% { transform: translateY(-3px); }
@@ -399,13 +411,19 @@ body {
 /* Stats Row */
 .stats-row {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 12px;
     margin: 18px 0;
     padding: 14px;
     background: rgba(0, 0, 0, 0.25);
     border-radius: var(--radius-md);
     border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+@media (min-width: 480px) {
+    .stats-row {
+        grid-template-columns: repeat(4, 1fr);
+    }
 }
 
 .stat-item {
@@ -429,6 +447,30 @@ body {
 
 .safe-tag {
     color: var(--accent-emerald);
+}
+
+.warn-tag {
+    color: var(--accent-amber) !important;
+}
+
+.danger-tag {
+    color: #f97316 !important;
+}
+
+.radar-circle.warning {
+    border-color: rgba(245, 158, 11, 0.4);
+    box-shadow: 0 0 20px rgba(245, 158, 11, 0.25);
+}
+
+.radar-circle.warning .radar-sweep {
+    background: conic-gradient(from 0deg, transparent 0deg, rgba(245, 158, 11, 0.25) 60deg, transparent 60deg);
+}
+
+.radar-circle.warning .device-core {
+    background: rgba(245, 158, 11, 0.25);
+    border-color: var(--accent-amber);
+    color: var(--accent-amber);
+    box-shadow: 0 0 15px rgba(245, 158, 11, 0.4);
 }
 
 .bat-bar-wrap {
@@ -609,6 +651,30 @@ body {
     margin-bottom: 18px;
 }
 
+.lang-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: rgba(0, 242, 254, 0.08);
+    border: 1px solid rgba(0, 242, 254, 0.25);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.lang-notice .notice-icon {
+    font-size: 18px;
+    line-height: 1.2;
+    flex-shrink: 0;
+}
+
+.lang-notice strong {
+    color: var(--accent-cyan);
+}
+
 .form-group {
     margin-bottom: 14px;
 }
@@ -637,6 +703,14 @@ body {
     outline: none;
     border-color: var(--accent-cyan);
     box-shadow: 0 0 10px rgba(0, 242, 254, 0.2);
+}
+
+.field-hint {
+    display: block;
+    font-size: 11px;
+    color: var(--accent-cyan);
+    margin-top: 4px;
+    letter-spacing: 0.2px;
 }
 
 /* M5StickC PLUS Hardware Mockup */

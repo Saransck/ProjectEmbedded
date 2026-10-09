@@ -60,6 +60,23 @@
             </div>
         </section>
 
+        <!-- Soft Warning Banner (Visible when Child is wandering away ~5-10m) -->
+        <section class="alert-banner warning-mode" id="warnBanner" style="display: none;">
+            <div class="alert-content">
+                <div class="alert-icon-pulse warn-pulse">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </div>
+                <div class="alert-info">
+                    <h3 id="warnTitle">⚠️ เด็กเริ่มเดินออกห่างแล้ว (~5–10 เมตร)</h3>
+                    <p id="warnDesc">สัญญาณเริ่มอ่อนลง กำลังเดินห่างจากผู้ปกครอง กรุณามองหาน้อง</p>
+                </div>
+            </div>
+        </section>
+
         <!-- Main Dashboard Grid -->
         <main class="dashboard-grid">
             <!-- Left Column: Status & Controls -->
@@ -101,6 +118,10 @@
                             <span class="stat-label">ระยะความปลอดภัย</span>
                             <span class="stat-value safe-tag" id="rangeStatusText">รอเชื่อมต่อ</span>
                         </div>
+                        <div class="stat-item">
+                            <span class="stat-label">สัญญาณ (RSSI)</span>
+                            <span class="stat-value" id="rssiText" style="color: var(--text-muted);">-- dBm</span>
+                        </div>
                     </div>
 
                     <div class="card-footer-actions">
@@ -109,6 +130,12 @@
                                 <path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/>
                             </svg>
                             <span>เชื่อมต่อ BLE กับนาฬิกา</span>
+                        </button>
+                        <button class="btn btn-danger-action" id="btnDisconnect" style="display: none;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/>
+                            </svg>
+                            <span>ตัดการเชื่อมต่อ (Disconnect)</span>
                         </button>
                         <button class="btn btn-outline" id="btnSyncTime" disabled>
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -161,19 +188,29 @@
                     </div>
                     <p class="section-desc">ข้อมูลนี้จะถูกส่งไปเก็บในหน่วยความจำของ M5StickC PLUS เพื่อแสดงผลเมื่อออกนอกระยะ</p>
 
+                    <!-- Language Support Notice -->
+                    <div class="lang-notice">
+                        <span class="notice-icon">💡</span>
+                        <div class="notice-text">
+                            <strong>คำแนะนำภาษา:</strong> หน้าจอนาฬิกา M5StickC PLUS รองรับตัวอักษรภาษาอังกฤษ (A-Z) และตัวเลข (0-9) โปรดใช้ชื่อภาษาอังกฤษ เช่น <b>Poom</b>, <b>Mom</b> เพื่อให้แสดงผลบนหน้าปัดได้ถูกต้องสวยงาม (ไม่เป็นอักษรเพี้ยน)
+                        </div>
+                    </div>
+
                     <form id="guardianForm" onsubmit="return false;">
                         <div class="form-group">
                             <label for="inputChildName">ชื่อเด็ก / ID น้อง</label>
                             <div class="input-wrap">
-                                <input type="text" id="inputChildName" placeholder="เช่น น้องภูมิ (Leo)" value="น้องภูมิ">
+                                <input type="text" id="inputChildName" placeholder="เช่น Poom หรือ น้องภูมิ" value="Poom">
                             </div>
+                            <span class="field-hint" id="childHint">แสดงบนนาฬิกา: Poom</span>
                         </div>
 
                         <div class="form-group">
                             <label for="inputParentName">ชื่อผู้ปกครอง</label>
                             <div class="input-wrap">
-                                <input type="text" id="inputParentName" placeholder="เช่น คุณแม่นก" value="คุณแม่นก">
+                                <input type="text" id="inputParentName" placeholder="เช่น Mom หรือ คุณแม่" value="Mom">
                             </div>
+                            <span class="field-hint" id="parentHint">แสดงบนนาฬิกา: Mom</span>
                         </div>
 
                         <div class="form-group">
@@ -207,10 +244,10 @@
                             <div class="m5-screen">
                                 <div class="m5-alarm-header">! LOST CHILD !</div>
                                 <div class="m5-info-box">
-                                    <div class="m5-child">เด็ก: <span id="prevChild">น้องภูมิ</span></div>
-                                    <div class="m5-parent">ผู้ปกครอง: <span id="prevParent">คุณแม่นก</span></div>
-                                    <div class="m5-phone">TEL: <span id="prevPhone">081-234-5678</span></div>
-                                    <div class="m5-hint">โปรดติดต่อผู้ปกครองทันที</div>
+                                    <div class="m5-child">CHILD: <span id="prevChild">Poom</span></div>
+                                    <div class="m5-parent">PARENT: <span id="prevParent">Mom</span></div>
+                                    <div class="m5-phone">TEL: <span id="prevPhone">0812345678</span></div>
+                                    <div class="m5-hint">Please call parent immediately!</div>
                                 </div>
                             </div>
                             <div class="m5-btn-m5">M5</div>
