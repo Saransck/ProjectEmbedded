@@ -55,8 +55,8 @@ bool isButtonAPressed = false;
 bool buzzerActive = false;
 bool buzzerHighTone = false;
 
-// Brightness control (7-12)
-uint8_t brightnessLevel = 11;
+// Brightness control (0-100 scale, default to 100 for maximum brightness)
+uint8_t brightnessLevel = 100;
 
 // Forward Declarations
 void updateDisplay();
@@ -93,6 +93,7 @@ class ServerCallbacks : public BLEServerCallbacks {
         if (alarmArmEnabled && hasBeenConnectedEver) {
             currentState = STATE_ALARM_OUT_OF_RANGE;
             alarmTriggerTime = millis();
+            M5.Axp.ScreenBreath(100); // 100% maximum brightness during alarm
             M5.Lcd.fillScreen(RED);
         }
 
@@ -163,12 +164,12 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
         if (value.length() > 0) {
             uint8_t cmd = (uint8_t)value[0];
             if (cmd == 0x01) {
-                // Find My Watch command -> Sound Buzzer
-                for (int i = 0; i < 3; i++) {
-                    M5.Beep.tone(3500);
-                    delay(150);
+                // Find My Watch command -> Sound Loud Buzzer at 4200 Hz
+                for (int i = 0; i < 4; i++) {
+                    M5.Beep.tone(4200);
+                    delay(160);
                     M5.Beep.mute();
-                    delay(100);
+                    delay(80);
                 }
             } else if (cmd == 0x02) {
                 // Stop buzzer
@@ -177,6 +178,7 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
                 // Simulate lost mode
                 currentState = STATE_ALARM_OUT_OF_RANGE;
                 alarmTriggerTime = millis();
+                M5.Axp.ScreenBreath(100);
                 M5.Lcd.fillScreen(RED);
             }
         }
@@ -211,9 +213,9 @@ int getBatteryPercentage() {
 }
 
 void playChime() {
-    M5.Beep.tone(3000);
+    M5.Beep.tone(3800);
     delay(80);
-    M5.Beep.tone(4000);
+    M5.Beep.tone(4500);
     delay(120);
     M5.Beep.mute();
 }
@@ -223,8 +225,8 @@ void playChime() {
 // ==========================================
 void setup() {
     M5.begin();
-    M5.Axp.ScreenBreath(brightnessLevel);
-    M5.Lcd.setRotation(1); // Landscape mode (240x135)
+    M5.Axp.ScreenBreath(100); // 100% Maximum Brightness
+    M5.Lcd.setRotation(1);    // Landscape mode (240x135)
     M5.Lcd.fillScreen(BLACK);
 
     loadSettings();
@@ -341,8 +343,9 @@ void loop() {
             }
 
             // High-pitched alert sound
-            M5.Beep.tone(4200);
-            delay(250);
+            M5.Axp.ScreenBreath(100);
+            M5.Beep.tone(4500);
+            delay(350);
             M5.Beep.mute();
             buttonAPressedTime = currentMillis + 10000; // prevent repeated triggers
         }
@@ -352,13 +355,13 @@ void loop() {
 
     // Button B (Side Button):
     // In Alarm mode -> Snooze buzzer for 45s while keeping screen visible
-    // In Normal mode -> Cycle brightness to conserve battery
+    // In Normal mode -> Cycle brightness between 100% (High) and 60% (Mid)
     if (M5.BtnB.wasPressed()) {
         if (currentState == STATE_ALARM_OUT_OF_RANGE) {
             snoozeUntil = currentMillis + 45000;
             stopBuzzer();
         } else {
-            brightnessLevel = (brightnessLevel == 11) ? 8 : 11;
+            brightnessLevel = (brightnessLevel == 100) ? 60 : 100;
             M5.Axp.ScreenBreath(brightnessLevel);
         }
     }
@@ -478,48 +481,39 @@ void drawEmergencyScreen() {
 
     M5.Lcd.fillScreen(bg);
 
-    // Flashing Header
+    // Flashing Header Banner
     M5.Lcd.setTextColor(WHITE, bg);
     M5.Lcd.setTextSize(2);
-    M5.Lcd.drawString("! LOST CHILD !", 10, 4);
+    M5.Lcd.drawString("! LOST CHILD !", 38, 4);
 
-    // Left Info Box
-    M5.Lcd.fillRect(4, 24, 138, 107, BLACK);
-    M5.Lcd.drawRect(4, 24, 138, 107, WHITE);
+    // Full-Width Emergency Info Card (232x107)
+    M5.Lcd.fillRect(4, 24, 232, 107, BLACK);
+    M5.Lcd.drawRect(4, 24, 232, 107, WHITE);
 
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(YELLOW, BLACK);
-    M5.Lcd.setCursor(8, 30);
-    M5.Lcd.printf("Child: %s", childName.c_str());
-
-    M5.Lcd.setTextColor(WHITE, BLACK);
-    M5.Lcd.setCursor(8, 44);
-    M5.Lcd.printf("Parent: %s", parentName.c_str());
-
-    M5.Lcd.setTextColor(CYAN, BLACK);
-    M5.Lcd.setCursor(8, 58);
-    M5.Lcd.print("CALL PARENT:");
-
+    // Child Name
     M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(YELLOW, BLACK);
+    M5.Lcd.setCursor(12, 30);
+    M5.Lcd.printf("CHILD: %s", childName.c_str());
+
+    // Parent Name
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.setCursor(12, 48);
+    M5.Lcd.printf("PARENT: %s", parentName.c_str());
+
+    // Big Bold Emergency Phone Number
+    M5.Lcd.setTextSize(3);
     M5.Lcd.setTextColor(TFT_GREENYELLOW, BLACK);
-    M5.Lcd.setCursor(8, 72);
+    M5.Lcd.setCursor(12, 68);
     M5.Lcd.print(parentPhone.c_str());
 
+    // Action Hint
     M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(CYAN, BLACK);
+    M5.Lcd.drawString("Please call parent immediately!", 22, 96);
     M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);
-    M5.Lcd.drawString("Side Btn: Snooze", 8, 100);
-    M5.Lcd.drawString("Please help call!", 8, 114);
-
-    // Right Side: Native On-Screen QR Code (Scan to Call)
-    String qrData = "tel:" + parentPhone;
-    // qrcode(string, x, y, width, version)
-    // version 3 width 87 fits perfectly at x=148, y=24
-    M5.Lcd.qrcode(qrData.c_str(), 148, 24, 87, 3);
-
-    // QR Label
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(WHITE, bg);
-    M5.Lcd.drawString("Scan to Call", 152, 116);
+    M5.Lcd.drawString("[Press Side Btn to Snooze Alarm]", 18, 112);
 }
 
 void drawSOSScreen() {
@@ -536,17 +530,13 @@ void drawSOSScreen() {
 // ==========================================
 void startBuzzerAlarm() {
     unsigned long now = millis();
-    // Alternating siren tone: 3200Hz <-> 4000Hz every 250ms
-    if (now - lastBeepToggle >= 250) {
+    // Fast alternating dual-tone siren at resonant frequency peak (4000Hz <-> 4500Hz)
+    // Continuous sound switching every 120ms for maximum acoustic loudness and urgency
+    if (now - lastBeepToggle >= 120) {
         lastBeepToggle = now;
         buzzerHighTone = !buzzerHighTone;
-        buzzerActive = !buzzerActive;
-
-        if (buzzerActive) {
-            M5.Beep.tone(buzzerHighTone ? 4000 : 3200);
-        } else {
-            M5.Beep.mute();
-        }
+        M5.Beep.tone(buzzerHighTone ? 4500 : 4000);
+        buzzerActive = true;
     }
 }
 

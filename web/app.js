@@ -88,6 +88,7 @@ window.addEventListener('DOMContentLoaded', () => {
 // ==========================================
 function initQRCode() {
     const qrElem = document.getElementById('qrcode');
+    if (!qrElem) return;
     qrElem.innerHTML = '';
     const phone = inputParentPhone.value.trim() || "0812345678";
     qrCodeObj = new QRCode(qrElem, {
