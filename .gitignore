@@ -1,0 +1,11 @@
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*~
+
+# PlatformIO
+.pio/
+.vscode/
+*.bin
+*.elf
