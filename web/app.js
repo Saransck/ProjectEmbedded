@@ -141,18 +141,41 @@ async function toggleConnect() {
         return;
     }
 
-    try {
-        log('กำลังเริ่มสแกนหานาฬิกา M5StickC PLUS...', 'info');
+    if (!navigator.bluetooth) {
+        alert("⚠️ เบราว์เซอร์ปัจจุบันไม่รองรับ Web Bluetooth API!\n\n" +
+              "• หากใช้ iPhone หรือ iPad: บราวเซอร์มาตรฐาน (Safari, Chrome บน iOS) ไม่รองรับบลูทูธบนเว็บ โปรดดาวน์โหลดแอป 'Bluefy - Web BLE Browser' จาก App Store แล้วเปิดเว็บนี้\n\n" +
+              "• หากใช้ Mac หรือ Windows: ต้องเปิดผ่าน 'Google Chrome' หรือ 'Microsoft Edge' เท่านั้น (Safari / Firefox ไม่รองรับ)\n\n" +
+              "• หากใช้ Android: โปรดเปิดใช้งานทั้ง Bluetooth และ ตำแหน่ง (Location/GPS)");
+        log('เบราว์เซอร์ไม่รองรับ Web Bluetooth API (โปรดใช้ Chrome/Edge หรือ Bluefy บน iOS)', 'error');
+        return;
+    }
 
-        bleDevice = await navigator.bluetooth.requestDevice({
-            filters: [
-                { namePrefix: 'KidsWatch' }
-            ],
-            optionalServices: [SERVICE_UUID]
-        });
+    try {
+        const chkAllDevices = document.getElementById('chkAllDevices');
+        let requestOptions;
+
+        if (chkAllDevices && chkAllDevices.checked) {
+            log('🔍 กำลังค้นหาอุปกรณ์บลูทูธทั้งหมดรอบตัว (โหมด All Devices)...', 'info');
+            requestOptions = {
+                acceptAllDevices: true,
+                optionalServices: [SERVICE_UUID]
+            };
+        } else {
+            log('🔍 กำลังสแกนหา KidsWatch (หรือติ๊ก "ค้นหาอุปกรณ์ทั้งหมด" หากหาไม่เจอ)...', 'info');
+            requestOptions = {
+                filters: [
+                    { namePrefix: 'KidsWatch' },
+                    { namePrefix: 'M5' },
+                    { services: [SERVICE_UUID] }
+                ],
+                optionalServices: [SERVICE_UUID]
+            };
+        }
+
+        bleDevice = await navigator.bluetooth.requestDevice(requestOptions);
 
         bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-        log(`พบอุปกรณ์: ${bleDevice.name} กำลังเชื่อมต่อ...`, 'info');
+        log(`พบอุปกรณ์: ${bleDevice.name || 'อุปกรณ์ไม่ระบุชื่อ'} กำลังเชื่อมต่อ...`, 'info');
 
         gattServer = await bleDevice.gatt.connect();
         log('เชื่อมต่อสำเร็จ! กำลังค้นหา Guardian GATT Services...', 'success');
@@ -192,7 +215,11 @@ async function toggleConnect() {
         await sendInfoToWatch();
 
     } catch (error) {
-        log(`เชื่อมต่อไม่สำเร็จ: ${error.message || error}`, 'error');
+        if (error.name === 'NotFoundError') {
+            log('ยกเลิกการเลือก หรือไม่พบอุปกรณ์ในระยะ (ลองติ๊ก "ค้นหาอุปกรณ์ทั้งหมดรอบตัว" แล้วกดใหม่อีกครั้ง)', 'warn');
+        } else {
+            log(`เชื่อมต่อไม่สำเร็จ: ${error.message || error}`, 'error');
+        }
         setConnectedState(false);
     }
 }

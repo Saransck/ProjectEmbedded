@@ -92,7 +92,7 @@ class ServerCallbacks : public BLEServerCallbacks {
             M5.Lcd.fillScreen(RED);
         }
         // Restart Advertising
-        pServer->getAdvertising()->start();
+        BLEDevice::startAdvertising();
     }
 };
 
@@ -273,6 +273,16 @@ void setup() {
     pAdvertising->setScanResponse(true);
     pAdvertising->setMinPreferred(0x06); // iPhone connection optimization
     pAdvertising->setMinPreferred(0x12);
+
+    BLEAdvertisementData advData;
+    advData.setFlags(0x06);
+    advData.setCompleteServices(BLEUUID(SERVICE_UUID));
+    pAdvertising->setAdvertisementData(advData);
+
+    BLEAdvertisementData scanData;
+    scanData.setName(devName.c_str());
+    pAdvertising->setScanResponseData(scanData);
+
     BLEDevice::startAdvertising();
 
     drawNormalWatchFace();

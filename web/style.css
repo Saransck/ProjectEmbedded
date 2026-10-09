@@ -521,6 +521,35 @@ body {
     gap: 10px;
 }
 
+.scan-options-row {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: var(--radius-sm);
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+}
+
+.scan-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.scan-toggle-label input[type="checkbox"] {
+    accent-color: var(--accent-cyan);
+    cursor: pointer;
+    width: 15px;
+    height: 15px;
+}
+
+.scan-toggle-label:hover {
+    color: var(--text-primary);
+}
+
 .full-width {
     width: 100%;
 }
