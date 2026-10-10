@@ -486,8 +486,12 @@ function onCommandReceived(event) {
     const value = event.target.value;
     if (value.byteLength > 0) {
         const cmd = value.getUint8(0);
-        if (cmd === 0xFF) { // SOS Flag from Watch
+        if (cmd === 0xFE) { // Button A Alert from Watch
+            triggerEmergencyAlarm("🔔 น้องกดปุ่ม A เรียกหาผู้ปกครอง! (Button A Alert)", "เด็กกดปุ่ม A (ปุ่ม M5) บนนาฬิกาเพื่อส่งสัญญาณเตือนมายังมือถือคุณแม่/คุณพ่อ กรุณาตรวจสอบน้องทันที");
+            log("🔔 สัญญาณเตือนจากนาฬิกา: น้องกดปุ่ม A เรียกหาผู้ปกครอง!", "warn");
+        } else if (cmd === 0xFF) { // SOS Flag from Watch
             triggerEmergencyAlarm("🚨 เด็กกดปุ่มขอความช่วยเหลือฉุกเฉิน (SOS)!", "เด็กกดปุ่ม M5 บนนาฬิกาค้างไว้เพื่อส่งสัญญาณเตือนคุณแม่/คุณพ่อ");
+            log("🚨 สัญญาณเตือนจากนาฬิกา: ขอความช่วยเหลือฉุกเฉิน (SOS)!", "error");
         }
     }
 }
@@ -591,9 +595,14 @@ async function syncCurrentTimeToWatch() {
         const encoder = new TextEncoder();
         await safeWrite(timeChar, encoder.encode(timeStr));
 
+        const day = String(now.getDate()).padStart(2, '0');
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const year = now.getFullYear();
+        const dateDisplay = `${day}/${month}/${year}`;
         const timeDisplay = now.toLocaleTimeString('th-TH');
-        watchTimeText.textContent = timeDisplay;
-        log(`ซิงค์เวลากับนาฬิกาสำเร็จ: ${timeDisplay}`, 'success');
+
+        watchTimeText.textContent = `${dateDisplay} ${timeDisplay}`;
+        log(`ซิงค์วัน-เวลากับนาฬิกาสำเร็จ: ${dateDisplay} ${timeDisplay}`, 'success');
     } catch (e) {
         log(`เกิดข้อผิดพลาดในการซิงค์เวลา: ${e.message}`, 'error');
     }

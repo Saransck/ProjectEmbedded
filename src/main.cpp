@@ -517,29 +517,51 @@ void loop() {
     // ----------------------------------------------------
     // 1. Button Inputs
     // ----------------------------------------------------
-    // Button A (Front M5): Long press (2 sec) -> Send SOS
+    // Button A (Front M5 Button):
+    // Press -> Send Alert (0xFE) to Web Companion
+    // Long press (>2.5 sec) -> Escalate to Emergency SOS (0xFF)
+    if (M5.BtnA.wasPressed()) {
+        isButtonAPressed = true;
+        buttonAPressedTime = currentMillis;
+
+        // Immediate Alert on Button A press
+        currentState = STATE_SOS;
+        sosDisplayUntil = currentMillis + 4000;
+        M5.Lcd.fillScreen(ORANGE);
+        drawSOSScreen();
+
+        if (deviceConnected && pCommandChar) {
+            uint8_t alertCmd[] = { 0xFE }; // 0xFE = Button A Alert to Web
+            pCommandChar->setValue(alertCmd, 1);
+            pCommandChar->notify();
+        }
+
+        // Distinct alert chirp on watch
+        M5.Axp.ScreenBreath(100);
+        M5.Beep.tone(4200);
+        delay(100);
+        M5.Beep.tone(4800);
+        delay(140);
+        M5.Beep.mute();
+    }
+
     if (M5.BtnA.isPressed()) {
-        if (!isButtonAPressed) {
-            isButtonAPressed = true;
-            buttonAPressedTime = currentMillis;
-        } else if (currentMillis - buttonAPressedTime > 2000) {
-            // SOS Triggered!
+        if (isButtonAPressed && (currentMillis - buttonAPressedTime > 2500)) {
+            isButtonAPressed = false; // Trigger once
             currentState = STATE_SOS;
-            sosDisplayUntil = currentMillis + 4000;
-            M5.Lcd.fillScreen(ORANGE);
+            sosDisplayUntil = currentMillis + 5000;
+            M5.Lcd.fillScreen(RED);
+            drawSOSScreen();
 
             if (deviceConnected && pCommandChar) {
-                uint8_t sosCmd[] = { 0xFF }; // SOS signal
+                uint8_t sosCmd[] = { 0xFF }; // 0xFF = Emergency SOS
                 pCommandChar->setValue(sosCmd, 1);
                 pCommandChar->notify();
             }
 
-            // High-pitched alert sound
-            M5.Axp.ScreenBreath(100);
             M5.Beep.tone(4500);
-            delay(350);
+            delay(300);
             M5.Beep.mute();
-            buttonAPressedTime = currentMillis + 10000; // prevent repeated triggers
         }
     } else {
         isButtonAPressed = false;
@@ -657,12 +679,12 @@ void drawNormalWatchFace() {
     M5.Lcd.setTextSize(4);
     M5.Lcd.drawString(timeBuffer, 18, 36);
 
-    // --- Date String ---
+    // --- Date String (Day / Month / Year) ---
     char dateBuffer[20];
-    sprintf(dateBuffer, "%04d-%02d-%02d", DateStruct.Year, DateStruct.Month, DateStruct.Date);
+    sprintf(dateBuffer, "%02d/%02d/%04d", DateStruct.Date, DateStruct.Month, DateStruct.Year);
     M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);
     M5.Lcd.setTextSize(2);
-    M5.Lcd.drawString(dateBuffer, 55, 82);
+    M5.Lcd.drawString(dateBuffer, 60, 82);
 
     // --- Bottom Status Bar ---
     M5.Lcd.drawFastHLine(0, 108, 240, TFT_NAVY);
@@ -736,10 +758,10 @@ void drawEmergencyScreen() {
 void drawSOSScreen() {
     M5.Lcd.setTextColor(BLACK, ORANGE);
     M5.Lcd.setTextSize(3);
-    M5.Lcd.drawString("SOS SENT!", 40, 30);
+    M5.Lcd.drawString("ALERT SENT!", 25, 30);
 
     M5.Lcd.setTextSize(2);
-    M5.Lcd.drawString("Alerting Parent...", 25, 75);
+    M5.Lcd.drawString("Calling Parent...", 25, 75);
 }
 
 // ==========================================
