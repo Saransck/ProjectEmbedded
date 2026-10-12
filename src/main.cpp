@@ -558,6 +558,9 @@ void loop() {
                     uint8_t sosCmd[] = { 0xFF, ++sosSeq };
                     pCommandChar->setValue(sosCmd, 2);
                     pCommandChar->notify();
+                    Serial.printf("[BLE] SOS 0xFF Sent (seq: %d)\n", sosSeq);
+                } else {
+                    Serial.println("[BLE] SOS Triggered but device not connected");
                 }
 
                 // Loud emergency alarm tone
@@ -565,8 +568,8 @@ void loop() {
                 delay(350);
                 M5.Beep.mute();
             }
-        } else if (holdDuration >= 350) {
-            // Holding feedback: Show countdown progress bar
+        } else if (holdDuration >= 1000) {
+            // Holding feedback: Show countdown progress bar after 1s of continuous holding
             if (!sosTriggered) {
                 isHoldingSos = true;
                 if (currentMillis - lastHoldDrawTime >= 40) {
@@ -578,17 +581,18 @@ void loop() {
     }
 
     // (c) Button A Released Event
-    if (M5.BtnA.wasReleased()) {
+    if (M5.BtnA.wasReleased() || (isButtonAPressed && !M5.BtnA.isPressed())) {
         if (isButtonAPressed) {
             unsigned long holdDuration = currentMillis - buttonAPressedTime;
             isButtonAPressed = false;
+            isHoldingSos = false;
 
             if (sosTriggered) {
                 // Already fired SOS, do nothing on release
-            } else if (holdDuration < 350) {
-                // Short Click (กดปุ่ม A 1 ครั้ง) -> Send Alert (0xFE)
+            } else {
+                // ANY button release before 2.0s (normal click/tap) -> Send Alert (0xFE)
                 currentState = STATE_ALERT;
-                alertDisplayUntil = currentMillis + 3500;
+                alertDisplayUntil = currentMillis + 4000;
                 lastDisplayUpdate = currentMillis;
                 M5.Axp.ScreenBreath(100);
                 M5.Lcd.fillScreen(BLACK);
@@ -598,6 +602,9 @@ void loop() {
                     uint8_t alertCmd[] = { 0xFE, ++alertSeq };
                     pCommandChar->setValue(alertCmd, 2);
                     pCommandChar->notify();
+                    Serial.printf("[BLE] Alert 0xFE Sent (seq: %d, hold: %lums)\n", alertSeq, holdDuration);
+                } else {
+                    Serial.printf("[BLE] Alert 0xFE Triggered but BLE NOT connected (hold: %lums)\n", holdDuration);
                 }
 
                 // Distinct 2-tone pleasant alert chirp on watch
@@ -606,11 +613,6 @@ void loop() {
                 M5.Beep.tone(4800);
                 delay(130);
                 M5.Beep.mute();
-            } else {
-                // User held > 350ms but released before 2.0s -> Cancelled SOS hold
-                isHoldingSos = false;
-                needScreenRedraw = true;
-                M5.Lcd.fillScreen(BLACK);
             }
         }
     }
@@ -876,13 +878,23 @@ void drawAlertScreen() {
     // Card frame
     M5.Lcd.drawRect(4, 46, 232, 85, ORANGE);
 
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.setTextColor(YELLOW, BLACK);
-    M5.Lcd.drawString("ALERT SENT TO WEB", 16, 56);
+    if (deviceConnected) {
+        M5.Lcd.setTextSize(2);
+        M5.Lcd.setTextColor(YELLOW, BLACK);
+        M5.Lcd.drawString("ALERT SENT TO WEB", 16, 56);
 
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setTextColor(WHITE, BLACK);
-    M5.Lcd.drawString("Notified Parent Companion App", 28, 86);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setTextColor(WHITE, BLACK);
+        M5.Lcd.drawString("Notified Parent Companion App", 28, 86);
+    } else {
+        M5.Lcd.setTextSize(2);
+        M5.Lcd.setTextColor(RED, BLACK);
+        M5.Lcd.drawString("BLE NOT CONNECTED", 14, 56);
+
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);
+        M5.Lcd.drawString("Connect via Web App first!", 38, 86);
+    }
 
     M5.Lcd.setTextSize(1);
     M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);

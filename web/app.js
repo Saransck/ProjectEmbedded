@@ -502,6 +502,7 @@ function onCommandReceived(event) {
 function triggerButtonAAlert(title, desc) {
     alertTitle.textContent = title;
     alertDesc.textContent = desc;
+    alertBanner.className = 'alert-banner warning-mode';
     alertBanner.style.display = 'block';
 
     connPill.className = 'connection-status-pill warning';
@@ -519,6 +520,7 @@ function triggerButtonAAlert(title, desc) {
 function triggerEmergencyAlarm(title, desc) {
     alertTitle.textContent = title;
     alertDesc.textContent = desc;
+    alertBanner.className = 'alert-banner';
     alertBanner.style.display = 'block';
 
     connPill.className = 'connection-status-pill alarm';
