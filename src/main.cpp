@@ -23,6 +23,7 @@
 enum WatchState {
     STATE_NORMAL,
     STATE_ALARM_OUT_OF_RANGE,
+    STATE_ALERT,
     STATE_SOS
 };
 
@@ -76,9 +77,15 @@ unsigned long lastBatteryUpdate = 0;
 unsigned long lastBeepToggle = 0;
 unsigned long alarmTriggerTime = 0;
 unsigned long snoozeUntil = 0;
+unsigned long alertDisplayUntil = 0;
 unsigned long sosDisplayUntil = 0;
 unsigned long buttonAPressedTime = 0;
 bool isButtonAPressed = false;
+bool isHoldingSos = false;
+bool sosTriggered = false;
+unsigned long lastHoldDrawTime = 0;
+static uint8_t alertSeq = 0;
+static uint8_t sosSeq = 0;
 bool buzzerActive = false;
 bool buzzerHighTone = false;
 
@@ -89,7 +96,9 @@ uint8_t brightnessLevel = 100;
 void updateDisplay();
 void drawNormalWatchFace();
 void drawEmergencyScreen();
+void drawAlertScreen();
 void drawSOSScreen();
+void drawHoldingSosScreen(unsigned long elapsed, unsigned long target);
 void startBuzzerAlarm();
 void stopBuzzer();
 void playChime();
@@ -518,53 +527,92 @@ void loop() {
     // 1. Button Inputs
     // ----------------------------------------------------
     // Button A (Front M5 Button):
-    // Press -> Send Alert (0xFE) to Web Companion
-    // Long press (>2.5 sec) -> Escalate to Emergency SOS (0xFF)
+    // Single Click (Release < 2.0s) -> Send Alert (0xFE) to Web Companion
+    // Long Press (Hold >= 2.0s)     -> Trigger Emergency SOS (0xFF) to Web Companion
+
+    // (a) Button A Pressed Down Event
     if (M5.BtnA.wasPressed()) {
         isButtonAPressed = true;
         buttonAPressedTime = currentMillis;
-
-        // Immediate Alert on Button A press
-        currentState = STATE_SOS;
-        sosDisplayUntil = currentMillis + 4000;
-        M5.Lcd.fillScreen(ORANGE);
-        drawSOSScreen();
-
-        if (deviceConnected && pCommandChar) {
-            uint8_t alertCmd[] = { 0xFE }; // 0xFE = Button A Alert to Web
-            pCommandChar->setValue(alertCmd, 1);
-            pCommandChar->notify();
-        }
-
-        // Distinct alert chirp on watch
-        M5.Axp.ScreenBreath(100);
-        M5.Beep.tone(4200);
-        delay(100);
-        M5.Beep.tone(4800);
-        delay(140);
-        M5.Beep.mute();
+        sosTriggered = false;
+        isHoldingSos = false;
     }
 
-    if (M5.BtnA.isPressed()) {
-        if (isButtonAPressed && (currentMillis - buttonAPressedTime > 2500)) {
-            isButtonAPressed = false; // Trigger once
-            currentState = STATE_SOS;
-            sosDisplayUntil = currentMillis + 5000;
-            M5.Lcd.fillScreen(RED);
-            drawSOSScreen();
+    // (b) Button A Being Held Down
+    if (isButtonAPressed && M5.BtnA.isPressed()) {
+        unsigned long holdDuration = currentMillis - buttonAPressedTime;
 
-            if (deviceConnected && pCommandChar) {
-                uint8_t sosCmd[] = { 0xFF }; // 0xFF = Emergency SOS
-                pCommandChar->setValue(sosCmd, 1);
-                pCommandChar->notify();
+        if (holdDuration >= 2000) {
+            // Reached 2.0s -> Escalate to Emergency SOS!
+            if (!sosTriggered) {
+                sosTriggered = true;
+                isHoldingSos = false;
+                currentState = STATE_SOS;
+                sosDisplayUntil = currentMillis + 5000;
+                lastDisplayUpdate = currentMillis;
+                M5.Axp.ScreenBreath(100);
+                M5.Lcd.fillScreen(BLACK);
+                drawSOSScreen();
+
+                if (deviceConnected && pCommandChar) {
+                    uint8_t sosCmd[] = { 0xFF, ++sosSeq };
+                    pCommandChar->setValue(sosCmd, 2);
+                    pCommandChar->notify();
+                }
+
+                // Loud emergency alarm tone
+                M5.Beep.tone(4500);
+                delay(350);
+                M5.Beep.mute();
             }
-
-            M5.Beep.tone(4500);
-            delay(300);
-            M5.Beep.mute();
+        } else if (holdDuration >= 350) {
+            // Holding feedback: Show countdown progress bar
+            if (!sosTriggered) {
+                isHoldingSos = true;
+                if (currentMillis - lastHoldDrawTime >= 40) {
+                    lastHoldDrawTime = currentMillis;
+                    drawHoldingSosScreen(holdDuration, 2000);
+                }
+            }
         }
-    } else {
-        isButtonAPressed = false;
+    }
+
+    // (c) Button A Released Event
+    if (M5.BtnA.wasReleased()) {
+        if (isButtonAPressed) {
+            unsigned long holdDuration = currentMillis - buttonAPressedTime;
+            isButtonAPressed = false;
+
+            if (sosTriggered) {
+                // Already fired SOS, do nothing on release
+            } else if (holdDuration < 350) {
+                // Short Click (กดปุ่ม A 1 ครั้ง) -> Send Alert (0xFE)
+                currentState = STATE_ALERT;
+                alertDisplayUntil = currentMillis + 3500;
+                lastDisplayUpdate = currentMillis;
+                M5.Axp.ScreenBreath(100);
+                M5.Lcd.fillScreen(BLACK);
+                drawAlertScreen();
+
+                if (deviceConnected && pCommandChar) {
+                    uint8_t alertCmd[] = { 0xFE, ++alertSeq };
+                    pCommandChar->setValue(alertCmd, 2);
+                    pCommandChar->notify();
+                }
+
+                // Distinct 2-tone pleasant alert chirp on watch
+                M5.Beep.tone(4200);
+                delay(90);
+                M5.Beep.tone(4800);
+                delay(130);
+                M5.Beep.mute();
+            } else {
+                // User held > 350ms but released before 2.0s -> Cancelled SOS hold
+                isHoldingSos = false;
+                needScreenRedraw = true;
+                M5.Lcd.fillScreen(BLACK);
+            }
+        }
     }
 
     // Button B (Side Button):
@@ -602,14 +650,30 @@ void loop() {
             M5.Lcd.fillScreen(BLACK);
             needScreenRedraw = true;
         } else {
-            drawSOSScreen();
+            if (currentMillis - lastDisplayUpdate >= 600) {
+                lastDisplayUpdate = currentMillis;
+                drawSOSScreen();
+            }
+        }
+    } else if (currentState == STATE_ALERT) {
+        if (currentMillis > alertDisplayUntil) {
+            currentState = STATE_NORMAL;
+            M5.Lcd.fillScreen(BLACK);
+            needScreenRedraw = true;
+        } else {
+            if (currentMillis - lastDisplayUpdate >= 600) {
+                lastDisplayUpdate = currentMillis;
+                drawAlertScreen();
+            }
         }
     } else { // STATE_NORMAL
         stopBuzzer();
-        if (currentMillis - lastDisplayUpdate >= 1000 || needScreenRedraw) {
-            lastDisplayUpdate = currentMillis;
-            needScreenRedraw = false;
-            drawNormalWatchFace();
+        if (!isHoldingSos) {
+            if (currentMillis - lastDisplayUpdate >= 1000 || needScreenRedraw) {
+                lastDisplayUpdate = currentMillis;
+                needScreenRedraw = false;
+                drawNormalWatchFace();
+            }
         }
     }
 
@@ -755,13 +819,109 @@ void drawEmergencyScreen() {
     M5.Lcd.drawString("[Press Side Btn to Snooze Alarm]", 18, 112);
 }
 
-void drawSOSScreen() {
+void drawHoldingSosScreen(unsigned long elapsed, unsigned long target) {
+    // Outer card
+    M5.Lcd.fillRect(4, 4, 232, 127, BLACK);
+    M5.Lcd.drawRect(4, 4, 232, 127, RED);
+    M5.Lcd.drawRect(6, 6, 228, 123, TFT_MAROON);
+
+    // Header title
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(RED, BLACK);
+    M5.Lcd.drawString("! SOS COUNTDOWN !", 24, 14);
+
+    // Progress bar frame
+    int barX = 18;
+    int barY = 46;
+    int barW = 204;
+    int barH = 24;
+    M5.Lcd.drawRect(barX, barY, barW, barH, WHITE);
+
+    float progress = (float)elapsed / (float)target;
+    if (progress > 1.0f) progress = 1.0f;
+    int fillW = (int)(progress * (barW - 4));
+
+    if (fillW > 0) {
+        M5.Lcd.fillRect(barX + 2, barY + 2, fillW, barH - 4, RED);
+    }
+    if (fillW < (barW - 4)) {
+        M5.Lcd.fillRect(barX + 2 + fillW, barY + 2, (barW - 4) - fillW, barH - 4, BLACK);
+    }
+
+    // Remaining seconds countdown
+    int remainingMs = (int)(target - elapsed);
+    if (remainingMs < 0) remainingMs = 0;
+    float secLeft = (float)remainingMs / 1000.0f;
+
+    char secBuf[32];
+    sprintf(secBuf, "Hold %.1fs for SOS", secLeft);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(YELLOW, BLACK);
+    M5.Lcd.drawString(secBuf, 30, 78);
+
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);
+    M5.Lcd.drawString("(Release button to cancel)", 42, 106);
+}
+
+void drawAlertScreen() {
+    M5.Lcd.fillScreen(BLACK);
+
+    // Header banner in Amber/Orange
+    M5.Lcd.fillRect(0, 0, 240, 42, ORANGE);
     M5.Lcd.setTextColor(BLACK, ORANGE);
     M5.Lcd.setTextSize(3);
-    M5.Lcd.drawString("ALERT SENT!", 25, 30);
+    M5.Lcd.drawString("CALL PARENT", 24, 10);
+
+    // Card frame
+    M5.Lcd.drawRect(4, 46, 232, 85, ORANGE);
 
     M5.Lcd.setTextSize(2);
-    M5.Lcd.drawString("Calling Parent...", 25, 75);
+    M5.Lcd.setTextColor(YELLOW, BLACK);
+    M5.Lcd.drawString("ALERT SENT TO WEB", 16, 56);
+
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.drawString("Notified Parent Companion App", 28, 86);
+
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(TFT_LIGHTGREY, BLACK);
+    M5.Lcd.drawString("[Single Press M5 Button]", 46, 106);
+}
+
+void drawSOSScreen() {
+    static bool flash = false;
+    flash = !flash;
+    uint16_t headerBg = flash ? RED : TFT_MAROON;
+
+    M5.Lcd.fillScreen(BLACK);
+
+    // Flashing emergency banner
+    M5.Lcd.fillRect(0, 0, 240, 42, headerBg);
+    M5.Lcd.setTextColor(WHITE, headerBg);
+    M5.Lcd.setTextSize(3);
+    M5.Lcd.drawString("SOS SENT!", 42, 10);
+
+    // Card frame
+    M5.Lcd.drawRect(4, 46, 232, 85, RED);
+
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(YELLOW, BLACK);
+    M5.Lcd.drawString("EMERGENCY ALERT", 26, 54);
+
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    String safeParent = sanitizeAscii(parentName, "Parent");
+    M5.Lcd.drawString(safeParent.c_str(), 14, 76);
+
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(TFT_GREENYELLOW, BLACK);
+    String safePhone = sanitizeAscii(parentPhone, "0812345678");
+    M5.Lcd.drawString(safePhone.c_str(), 14, 98);
+
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(CYAN, BLACK);
+    M5.Lcd.drawString("Sent to Web App", 135, 114);
 }
 
 // ==========================================

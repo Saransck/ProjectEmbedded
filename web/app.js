@@ -486,13 +486,33 @@ function onCommandReceived(event) {
     const value = event.target.value;
     if (value.byteLength > 0) {
         const cmd = value.getUint8(0);
-        if (cmd === 0xFE) { // Button A Alert from Watch
-            triggerEmergencyAlarm("🔔 น้องกดปุ่ม A เรียกหาผู้ปกครอง! (Button A Alert)", "เด็กกดปุ่ม A (ปุ่ม M5) บนนาฬิกาเพื่อส่งสัญญาณเตือนมายังมือถือคุณแม่/คุณพ่อ กรุณาตรวจสอบน้องทันที");
-            log("🔔 สัญญาณเตือนจากนาฬิกา: น้องกดปุ่ม A เรียกหาผู้ปกครอง!", "warn");
-        } else if (cmd === 0xFF) { // SOS Flag from Watch
-            triggerEmergencyAlarm("🚨 เด็กกดปุ่มขอความช่วยเหลือฉุกเฉิน (SOS)!", "เด็กกดปุ่ม M5 บนนาฬิกาค้างไว้เพื่อส่งสัญญาณเตือนคุณแม่/คุณพ่อ");
-            log("🚨 สัญญาณเตือนจากนาฬิกา: ขอความช่วยเหลือฉุกเฉิน (SOS)!", "error");
+        const seq = (value.byteLength > 1) ? value.getUint8(1) : 0;
+        console.log(`[BLE Command] 0x${cmd.toString(16).toUpperCase()} received (seq: ${seq})`);
+
+        if (cmd === 0xFE) { // Button A Alert from Watch (Single click)
+            triggerButtonAAlert("🔔 น้องกดปุ่ม A เรียกหาผู้ปกครอง! (Button A Alert)", "เด็กกดปุ่ม A (ปุ่ม M5) บนนาฬิกาเพื่อส่งสัญญาณเตือนมายังมือถือคุณแม่/คุณพ่อ กรุณาตรวจสอบน้องทันที");
+            log(`🔔 สัญญาณเตือนจากนาฬิกา: น้องกดปุ่ม A เรียกหาผู้ปกครอง! (#${seq})`, "warn");
+        } else if (cmd === 0xFF) { // SOS Flag from Watch (Long press)
+            triggerEmergencyAlarm("🚨 เด็กกดปุ่มขอความช่วยเหลือฉุกเฉิน (SOS)!", "เด็กกดปุ่ม M5 บนนาฬิกาค้างไว้เพื่อส่งสัญญาณเตือนฉุกเฉินคุณแม่/คุณพ่อ");
+            log(`🚨 สัญญาณเตือนฉุกเฉินจากนาฬิกา: ขอความช่วยเหลือฉุกเฉิน (SOS)! (#${seq})`, "error");
         }
+    }
+}
+
+function triggerButtonAAlert(title, desc) {
+    alertTitle.textContent = title;
+    alertDesc.textContent = desc;
+    alertBanner.style.display = 'block';
+
+    connPill.className = 'connection-status-pill warning';
+    connText.textContent = 'CALL ALERT';
+
+    playCallChime();
+
+    if (navigator.vibrate) {
+        try {
+            navigator.vibrate([200, 100, 200, 100, 300]);
+        } catch (e) {}
     }
 }
 
@@ -513,15 +533,49 @@ function triggerEmergencyAlarm(title, desc) {
 function dismissEmergencyAlarm() {
     alertBanner.style.display = 'none';
     stopAudioSiren();
+    if (isConnected) {
+        connPill.className = 'connection-status-pill connected';
+        connText.textContent = 'Connected (In Range)';
+    }
 }
 
 // ==========================================
-// 🔊 Web Audio Siren Synthesizer
+// 🔊 Web Audio Siren & Chime Synthesizer
 // ==========================================
 function initAudio() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
+}
+
+function playCallChime() {
+    initAudio();
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    const now = audioCtx.currentTime;
+
+    const osc1 = audioCtx.createOscillator();
+    const gain1 = audioCtx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(659.25, now);
+    gain1.gain.setValueAtTime(0.35, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    osc1.connect(gain1);
+    gain1.connect(audioCtx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.35);
+
+    const osc2 = audioCtx.createOscillator();
+    const gain2 = audioCtx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(880.00, now + 0.18);
+    gain2.gain.setValueAtTime(0.35, now + 0.18);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+    osc2.connect(gain2);
+    gain2.connect(audioCtx.destination);
+    osc2.start(now + 0.18);
+    osc2.stop(now + 0.65);
 }
 
 function startAudioSiren() {
