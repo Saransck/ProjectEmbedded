@@ -196,6 +196,25 @@ body {
     font-weight: 600;
 }
 
+.connection-status-pill.warning {
+    border-color: rgba(245, 158, 11, 0.6);
+    background: rgba(245, 158, 11, 0.15);
+    animation: pulseBorderWarn 1.2s infinite alternate;
+}
+.connection-status-pill.warning .status-dot {
+    background-color: var(--accent-amber);
+    box-shadow: 0 0 10px var(--accent-amber);
+}
+.connection-status-pill.warning .status-label {
+    color: var(--accent-amber);
+    font-weight: 600;
+}
+
+@keyframes pulseBorderWarn {
+    from { box-shadow: 0 0 5px rgba(245, 158, 11, 0.2); }
+    to { box-shadow: 0 0 16px rgba(245, 158, 11, 0.5); }
+}
+
 @keyframes pulseBorder {
     from { box-shadow: 0 0 5px rgba(239, 68, 68, 0.2); }
     to { box-shadow: 0 0 20px rgba(239, 68, 68, 0.6); }
