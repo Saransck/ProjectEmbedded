@@ -531,90 +531,98 @@ void loop() {
     // Long Press (Hold >= 2.0s)     -> Trigger Emergency SOS (0xFF) to Web Companion
 
     // (a) Button A Pressed Down Event
-    if (M5.BtnA.wasPressed()) {
-        isButtonAPressed = true;
-        buttonAPressedTime = currentMillis;
-        sosTriggered = false;
-        isHoldingSos = false;
-    }
-
-    // (b) Button A Being Held Down
-    if (isButtonAPressed && M5.BtnA.isPressed()) {
-        unsigned long holdDuration = currentMillis - buttonAPressedTime;
-
-        if (holdDuration >= 2000) {
-            // Reached 2.0s -> Escalate to Emergency SOS!
-            if (!sosTriggered) {
-                sosTriggered = true;
-                isHoldingSos = false;
-                currentState = STATE_SOS;
-                sosDisplayUntil = currentMillis + 5000;
-                lastDisplayUpdate = currentMillis;
-                M5.Axp.ScreenBreath(100);
-                M5.Lcd.fillScreen(BLACK);
-                drawSOSScreen();
-
-                if (deviceConnected && pCommandChar) {
-                    uint8_t sosCmd[] = { 0xFF, ++sosSeq };
-                    pCommandChar->setValue(sosCmd, 2);
-                    pCommandChar->notify();
-                    Serial.printf("[BLE] SOS 0xFF Sent (seq: %d)\n", sosSeq);
-                } else {
-                    Serial.println("[BLE] SOS Triggered but device not connected");
-                }
-
-                // Loud emergency alarm tone
-                M5.Beep.tone(4500);
-                delay(350);
-                M5.Beep.mute();
-            }
-        } else if (holdDuration >= 1000) {
-            // Holding feedback: Show countdown progress bar after 1s of continuous holding
-            if (!sosTriggered) {
-                isHoldingSos = true;
-                if (currentMillis - lastHoldDrawTime >= 40) {
-                    lastHoldDrawTime = currentMillis;
-                    drawHoldingSosScreen(holdDuration, 2000);
-                }
-            }
-        }
-    }
-
-    // (c) Button A Released Event
-    if (M5.BtnA.wasReleased() || (isButtonAPressed && !M5.BtnA.isPressed())) {
-        if (isButtonAPressed) {
-            unsigned long holdDuration = currentMillis - buttonAPressedTime;
-            isButtonAPressed = false;
+    // NOTE: Button A is completely disabled in STATE_ALARM_OUT_OF_RANGE so Lost Child screen cannot be dismissed!
+    if (currentState != STATE_ALARM_OUT_OF_RANGE) {
+        if (M5.BtnA.wasPressed()) {
+            isButtonAPressed = true;
+            buttonAPressedTime = currentMillis;
+            sosTriggered = false;
             isHoldingSos = false;
+        }
 
-            if (sosTriggered) {
-                // Already fired SOS, do nothing on release
-            } else {
-                // ANY button release before 2.0s (normal click/tap) -> Send Alert (0xFE)
-                currentState = STATE_ALERT;
-                alertDisplayUntil = currentMillis + 4000;
-                lastDisplayUpdate = currentMillis;
-                M5.Axp.ScreenBreath(100);
-                M5.Lcd.fillScreen(BLACK);
-                drawAlertScreen();
+        // (b) Button A Being Held Down
+        if (isButtonAPressed && M5.BtnA.isPressed()) {
+            unsigned long holdDuration = currentMillis - buttonAPressedTime;
 
-                if (deviceConnected && pCommandChar) {
-                    uint8_t alertCmd[] = { 0xFE, ++alertSeq };
-                    pCommandChar->setValue(alertCmd, 2);
-                    pCommandChar->notify();
-                    Serial.printf("[BLE] Alert 0xFE Sent (seq: %d, hold: %lums)\n", alertSeq, holdDuration);
-                } else {
-                    Serial.printf("[BLE] Alert 0xFE Triggered but BLE NOT connected (hold: %lums)\n", holdDuration);
+            if (holdDuration >= 2000) {
+                // Reached 2.0s -> Escalate to Emergency SOS!
+                if (!sosTriggered) {
+                    sosTriggered = true;
+                    isHoldingSos = false;
+                    currentState = STATE_SOS;
+                    sosDisplayUntil = currentMillis + 5000;
+                    lastDisplayUpdate = currentMillis;
+                    M5.Axp.ScreenBreath(100);
+                    M5.Lcd.fillScreen(BLACK);
+                    drawSOSScreen();
+
+                    if (deviceConnected && pCommandChar) {
+                        uint8_t sosCmd[] = { 0xFF, ++sosSeq };
+                        pCommandChar->setValue(sosCmd, 2);
+                        pCommandChar->notify();
+                        Serial.printf("[BLE] SOS 0xFF Sent (seq: %d)\n", sosSeq);
+                    } else {
+                        Serial.println("[BLE] SOS Triggered but device not connected");
+                    }
+
+                    // Loud emergency alarm tone
+                    M5.Beep.tone(4500);
+                    delay(350);
+                    M5.Beep.mute();
                 }
-
-                // Distinct 2-tone pleasant alert chirp on watch
-                M5.Beep.tone(4200);
-                delay(90);
-                M5.Beep.tone(4800);
-                delay(130);
-                M5.Beep.mute();
+            } else if (holdDuration >= 1000) {
+                // Holding feedback: Show countdown progress bar after 1s of continuous holding
+                if (!sosTriggered) {
+                    isHoldingSos = true;
+                    if (currentMillis - lastHoldDrawTime >= 40) {
+                        lastHoldDrawTime = currentMillis;
+                        drawHoldingSosScreen(holdDuration, 2000);
+                    }
+                }
             }
         }
+
+        // (c) Button A Released Event
+        if (M5.BtnA.wasReleased() || (isButtonAPressed && !M5.BtnA.isPressed())) {
+            if (isButtonAPressed) {
+                unsigned long holdDuration = currentMillis - buttonAPressedTime;
+                isButtonAPressed = false;
+                isHoldingSos = false;
+
+                if (sosTriggered) {
+                    // Already fired SOS, do nothing on release
+                } else {
+                    // ANY button release before 2.0s (normal click/tap) -> Send Alert (0xFE)
+                    currentState = STATE_ALERT;
+                    alertDisplayUntil = currentMillis + 4000;
+                    lastDisplayUpdate = currentMillis;
+                    M5.Axp.ScreenBreath(100);
+                    M5.Lcd.fillScreen(BLACK);
+                    drawAlertScreen();
+
+                    if (deviceConnected && pCommandChar) {
+                        uint8_t alertCmd[] = { 0xFE, ++alertSeq };
+                        pCommandChar->setValue(alertCmd, 2);
+                        pCommandChar->notify();
+                        Serial.printf("[BLE] Alert 0xFE Sent (seq: %d, hold: %lums)\n", alertSeq, holdDuration);
+                    } else {
+                        Serial.printf("[BLE] Alert 0xFE Triggered but BLE NOT connected (hold: %lums)\n", holdDuration);
+                    }
+
+                    // Distinct 2-tone pleasant alert chirp on watch
+                    M5.Beep.tone(4200);
+                    delay(90);
+                    M5.Beep.tone(4800);
+                    delay(130);
+                    M5.Beep.mute();
+                }
+            }
+        }
+    } else {
+        // In LOST CHILD mode, clear any button A state to stay locked on Lost Child screen
+        isButtonAPressed = false;
+        isHoldingSos = false;
+        sosTriggered = false;
     }
 
     // Button B (Side Button):
